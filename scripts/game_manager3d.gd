@@ -140,9 +140,9 @@ func _build_3d() -> void:
 	add_child(_player_phone)
 
 	# 桌边小剧场：方块角色（国王金 / 红队红 / 玩家绿）
-	_king_char = _make_char(Color(0.95, 0.78, 0.2), "国王", Vector3(0, 0, -1.95))
-	_ai_char = _make_char(Color(0.85, 0.25, 0.25), "红队", Vector3(-2.05, 0, -1.1))
-	_player_char = _make_char(Color(0.3, 0.8, 0.35), "你", Vector3(2.05, 0, -1.1))
+	_king_char = _make_char(Color(0.95, 0.78, 0.2), "国王", Vector3(0, 0, -1.7))
+	_ai_char = _make_char(Color(0.85, 0.25, 0.25), "红队", Vector3(-2.3, 0, -0.4))
+	_player_char = _make_char(Color(0.3, 0.8, 0.35), "你", Vector3(2.3, 0, -0.4))
 
 	# ---- 3D 交互控件 ----
 	_draw_btn = Button3D.new()
@@ -195,36 +195,96 @@ func _make_char(color: Color, name_text: String, pos: Vector3) -> Node3D:
 
 	var body := MeshInstance3D.new()
 	var b := BoxMesh.new()
-	b.size = Vector3(0.5, 0.7, 0.4)
+	b.size = Vector3(0.7, 0.9, 0.5)
 	var bm := StandardMaterial3D.new()
 	bm.albedo_color = color
 	bm.emission_enabled = true
 	bm.emission = color
 	body.mesh = b
 	body.material_override = bm
-	body.position.y = 0.35
+	body.position.y = 0.45
 	root.add_child(body)
 
 	var head := MeshInstance3D.new()
 	var h := BoxMesh.new()
-	h.size = Vector3(0.32, 0.32, 0.32)
+	h.size = Vector3(0.42, 0.42, 0.42)
 	var hm := StandardMaterial3D.new()
 	hm.albedo_color = color.lightened(0.25)
 	hm.emission_enabled = true
 	hm.emission = color.lightened(0.25)
 	head.mesh = h
 	head.material_override = hm
-	head.position.y = 0.86
+	head.position.y = 1.11
 	root.add_child(head)
 
 	var label := Label3D.new()
 	label.text = name_text
-	label.font_size = 40
+	label.font_size = 44
 	label.pixel_size = 0.0022
 	label.modulate = Color(1, 1, 1)
-	label.position = Vector3(0, 1.15, 0)
+	label.position = Vector3(0, 1.5, 0)
 	root.add_child(label)
+
+	# 记录演出所需的材质与基准高度
+	root.set_meta("char_mats", [bm, hm])
+	root.set_meta("char_base_y", pos.y)
 	return root
+
+
+## 角色演出：说话时发光增强 + 轻微抬起（其余角色变暗回落）
+func _set_char_talk(char: Node3D, on: bool) -> void:
+	if char == null:
+		return
+	var mats: Array = char.get_meta("char_mats", [])
+	for m in mats:
+		m.emission_energy_multiplier = 3.0 if on else 1.0
+	var base: float = char.get_meta("char_base_y", 0.0)
+	var tw := char.create_tween()
+	tw.tween_property(char, "position:y", base + (0.12 if on else 0.0), 0.2)\
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+
+
+## 依据 VN 说话者，点亮对应角色演出
+func _update_char_talk(speaker: String) -> void:
+	_set_char_talk(_king_char, speaker == "国王")
+	_set_char_talk(_ai_char, speaker == "红队")
+	_set_char_talk(_player_char, speaker == "你")
+
+
+func _char_for(speaker: String) -> Node3D:
+	match speaker:
+		"国王":
+			return _king_char
+		"红队":
+			return _ai_char
+		"你":
+			return _player_char
+	return null
+
+
+## 在说话角色上方弹出 3D 对话气泡：飘起 + 淡出 + 消失
+func _spawn_speech(speaker: String, text: String) -> void:
+	var char := _char_for(speaker)
+	if char == null:
+		return
+	var lab := Label3D.new()
+	lab.text = text
+	lab.font_size = 30
+	lab.pixel_size = 0.0018
+	lab.modulate = Color(1, 1, 1)
+	lab.outline_size = 8
+	lab.outline_modulate = Color(0, 0, 0, 0.85)
+	lab.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	lab.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	lab.position = Vector3(0, 1.9, 0)
+	char.add_child(lab)
+
+	var tw := create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(lab, "position:y", 2.6, 2.4)\
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.tween_property(lab, "modulate:a", 0.0, 0.8).set_delay(1.6)
+	tw.chain().tween_callback(lab.queue_free)
 
 
 ## 构建教程高亮光环（平放圆环，自发光）
@@ -764,6 +824,8 @@ func show_vn(portrait: String, text: String) -> void:
 	_vn_portrait.text = portrait
 	_vn_text.text = text
 	_vn_panel.visible = true
+	_update_char_talk(portrait)
+	_spawn_speech(portrait, text)
 
 
 # ============================================================
