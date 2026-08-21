@@ -9,6 +9,8 @@ const KING_MIN := 18
 const MAX_CARDS := 5
 const START_LIVES := 4
 const AI_THINK_MAX := 6.0
+const USE_SETTLE_CAM := false  # 结算闪切镜头暂不启用（true 时走运镜序列）
+const SPECIAL_DAY_CHANCE := 0.4  # 出现特殊日（怀旧节/新鲜日）的概率；其余为普通日
 
 const AI_TAUNTS: Array[String] = [
 	"再加一把，让这锅更滚烫……",
@@ -19,8 +21,9 @@ const AI_TAUNTS: Array[String] = [
 ]
 
 enum Side { PLAYER, AI }
+enum Ingredient { EXPIRED, REFINED, NONE }  # 怀旧节（被计入者扣命） / 新鲜日（被计入者回命） / NONE=普通日（无特殊料）
 enum State { TUTORIAL, PLAYER_TURN, AI_TURN, GAME_OVER }
-enum Phase { IDLE, DECIDE }  # 玩家回合内：IDLE=选抽牌/开牌，DECIDE=决定保留/跳过
+enum Phase { IDLE, DECIDE, MARK }  # 玩家回合内：IDLE=选抽牌/开牌，DECIDE=决定保留/跳过，MARK=选标记料
 
 # ---- 3D 场景节点 ----
 var _camera: Camera3D
@@ -46,6 +49,9 @@ var _vn_portrait: Label
 var _vn_button: Button
 var _tut_next: Button  # 教程"了解"
 var _deck_label: Label
+var _day_chip: PanelContainer
+var _day_chip_label: Label
+var _day_chip_style: StyleBoxFlat
 
 # ---- 教程状态 ----
 var _tut_step := 0
@@ -65,6 +71,19 @@ var _pending_value := 0
 var _pending_slot: CardSlot3D = null
 var _ai_timer: Timer
 var _busy := false  # 发牌动画输入锁
+
+# ---- 过期料/精制料 ----
+var round_ingredient := Ingredient.EXPIRED  # 本局料种（每局重置）
+var player_mark_value := 0  # 玩家标记的牌值（0=未标）
+var ai_mark_value := 0      # AI 标记的牌值（0=未标）
+var _pick_bar: HBoxContainer
+var _pick_buttons: Array[Button] = []
+
+# ---- 镜头演出 ----
+var _cam_tw: Tween = null
+var _cam_seq_token := 0
+var _cam_home_pos := Vector3(0.5, 2.9, 4.8)
+var _cam_home_look := Vector3(0, 0.0, -0.2)
 
 
 func _ready() -> void:
@@ -235,6 +254,7 @@ func _make_char(color: Color, name_text: String, pos: Vector3) -> Node3D:
 func _set_char_talk(char: Node3D, on: bool) -> void:
 	if char == null:
 		return
+	_char_kill_tw(char)
 	var mats: Array = char.get_meta("char_mats", [])
 	for m in mats:
 		m.emission_energy_multiplier = 3.0 if on else 1.0
@@ -242,6 +262,54 @@ func _set_char_talk(char: Node3D, on: bool) -> void:
 	var tw := char.create_tween()
 	tw.tween_property(char, "position:y", base + (0.12 if on else 0.0), 0.2)\
 		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	char.set_meta("char_tw", tw)
+
+
+func _char_kill_tw(char: Node3D) -> void:
+	if not char.has_meta("char_tw"):
+		return
+	var tw: Tween = char.get_meta("char_tw")
+	if tw != null:
+		tw.kill()
+		char.set_meta("char_tw", null)
+
+
+## 角色反应演出：talk=发光抬升；hurt=压扁+红闪+下蹲；happy=蹦跳+金光
+func _char_react(char: Node3D, type: String) -> void:
+	if char == null:
+		return
+	_char_kill_tw(char)
+	var mats: Array = char.get_meta("char_mats", [])
+	var base: float = char.get_meta("char_base_y", 0.0)
+	var tw := char.create_tween()
+	match type:
+		"hurt":
+			tw.tween_property(char, "scale", Vector3(1.2, 0.68, 1.2), 0.18)\
+				.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+			tw.parallel().tween_property(char, "position:y", base - 0.16, 0.18)\
+				.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+			for m in mats:
+				tw.parallel().tween_property(m, "emission_energy_multiplier", 4.0, 0.15)
+			tw.tween_property(char, "scale", Vector3.ONE, 0.3)\
+				.set_trans(Tween.TRANS_BOUNCE).set_ease(Tween.EASE_OUT)
+			tw.parallel().tween_property(char, "position:y", base, 0.3)\
+				.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+			for m in mats:
+				tw.parallel().tween_property(m, "emission_energy_multiplier", 1.0, 0.3)
+		"happy":
+			tw.tween_property(char, "position:y", base + 0.32, 0.24)\
+				.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+			for m in mats:
+				tw.parallel().tween_property(m, "emission_energy_multiplier", 3.5, 0.15)
+			tw.tween_property(char, "position:y", base, 0.24)\
+				.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+			for m in mats:
+				tw.parallel().tween_property(m, "emission_energy_multiplier", 1.0, 0.2)
+		_:
+			for m in mats:
+				tw.parallel().tween_property(m, "emission_energy_multiplier", 3.0, 0.2)
+			tw.tween_property(char, "position:y", base + 0.12, 0.2)
+	char.set_meta("char_tw", tw)
 
 
 ## 依据 VN 说话者，点亮对应角色演出
@@ -315,7 +383,7 @@ func _build_ui() -> void:
 	_root.mouse_filter = Control.MOUSE_FILTER_PASS
 	add_child(_root)
 
-	# 标题
+	# 标题（隐藏：不显示顶部黄色标题）
 	var title := Label.new()
 	title.text = "皇家厨房 · 决斗餐桌"
 	title.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
@@ -324,6 +392,7 @@ func _build_ui() -> void:
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 24)
 	title.add_theme_color_override("font_color", Color(0.9, 0.78, 0.4))
+	title.visible = false
 	_root.add_child(title)
 
 	# 牌池计数（右上）
@@ -338,6 +407,31 @@ func _build_ui() -> void:
 	_deck_label.add_theme_font_size_override("font_size", 16)
 	_deck_label.add_theme_color_override("font_color", Color(0.85, 0.7, 0.5))
 	_root.add_child(_deck_label)
+
+	# 今日料种指示（顶部左侧，闹钟样式，默认隐藏；宽度自适应文本）
+	_day_chip = PanelContainer.new()
+	_day_chip.set_anchors_preset(Control.PRESET_TOP_LEFT)
+	_day_chip.grow_horizontal = Control.GROW_DIRECTION_END
+	_day_chip.grow_vertical = Control.GROW_DIRECTION_END
+	_day_chip.offset_left = 24
+	_day_chip.offset_top = 44
+	_day_chip_style = StyleBoxFlat.new()
+	_day_chip_style.bg_color = Color(0.04, 0.04, 0.06, 0.9)
+	_day_chip_style.set_border_width_all(2)
+	_day_chip_style.set_corner_radius_all(8)
+	_day_chip_style.content_margin_left = 10
+	_day_chip_style.content_margin_right = 10
+	_day_chip_style.content_margin_top = 6
+	_day_chip_style.content_margin_bottom = 6
+	_day_chip.add_theme_stylebox_override("panel", _day_chip_style)
+	_day_chip.visible = false
+	_root.add_child(_day_chip)
+
+	_day_chip_label = Label.new()
+	_day_chip_label.add_theme_font_size_override("font_size", 15)
+	_day_chip_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
+	_day_chip_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_day_chip.add_child(_day_chip_label)
 
 	# ---- VN 面板（顶部中央）----
 	_vn_panel = PanelContainer.new()
@@ -404,6 +498,28 @@ func _build_ui() -> void:
 	_vn_button.visible = false
 	btn_row.add_child(_vn_button)
 
+	# ---- 料种选择条（开局选标记牌，默认隐藏）----
+	_pick_bar = HBoxContainer.new()
+	_pick_bar.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
+	_pick_bar.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_pick_bar.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_pick_bar.offset_left = -320
+	_pick_bar.offset_top = -100
+	_pick_bar.offset_right = 320
+	_pick_bar.offset_bottom = -24
+	_pick_bar.add_theme_constant_override("separation", 8)
+	_pick_bar.visible = false
+	_root.add_child(_pick_bar)
+	for v in range(1, 11):
+		var b := Button.new()
+		b.text = str(v)
+		b.custom_minimum_size = Vector2(46, 46)
+		b.add_theme_font_size_override("font_size", 18)
+		b.set_meta("mark_val", v)
+		b.pressed.connect(_on_mark_pick.bind(v))
+		_pick_bar.add_child(b)
+		_pick_buttons.append(b)
+
 
 # ============================================================
 #  对局流程
@@ -416,6 +532,8 @@ const TUT_STEPS := 6
 func _start_tutorial() -> void:
 	state = State.TUTORIAL
 	_tut_step = 0
+	if _day_chip != null:
+		_day_chip.visible = false
 	_tut_show_step()
 
 
@@ -537,6 +655,17 @@ func _start_match() -> void:
 func _start_round() -> void:
 	_ai_timer.stop()
 	_busy = false
+	round_ingredient = Ingredient.NONE
+	if randf() < SPECIAL_DAY_CHANCE:
+		round_ingredient = Ingredient.EXPIRED if randf() < 0.5 else Ingredient.REFINED
+	player_mark_value = 0
+	ai_mark_value = 0
+	_hide_pick_bar()
+	if round_ingredient == Ingredient.NONE:
+		if _day_chip != null:
+			_day_chip.visible = false
+	else:
+		_update_day_chip()
 	card_pool = []
 	for v in range(1, 11):
 		card_pool.append(v)
@@ -555,6 +684,7 @@ func _start_round() -> void:
 	_ai_phone.set_points(0)
 	_update_lives()
 	_update_buttons()
+	_cam_player_push()  # 每局开始强制复位到玩家机位，避免结算后镜头滞留
 	_deal_opening()
 
 
@@ -579,8 +709,11 @@ func _deal_opening() -> void:
 		asl.card3d.reveal()
 	_busy = false
 	_update_scores()
-	show_vn("国王", "开局明牌：你 %d，红队 %d。目标 18~21。轮到你了：加料 或 铃铛开牌。" % [pv, av])
-	_start_player_turn()
+	show_vn("国王", "开局明牌：你 %d，红队 %d。目标 18~21。" % [pv, av])
+	if round_ingredient == Ingredient.NONE:
+		_start_player_turn()
+	else:
+		_start_marking()
 
 
 func _draw_from_pool() -> int:
@@ -600,6 +733,68 @@ func _spawn_deal(slot: CardSlot3D, value: int) -> void:
 	card.rotation_degrees.x = 180.0
 	CardAnimator3D.play_deal(card, slot, value)
 	await CardAnimator3D.deal_finished
+
+
+## 开局选标记牌：国王钦定本局料种后，双方各自暗选一张牌
+func _start_marking() -> void:
+	state = State.PLAYER_TURN
+	phase = Phase.MARK
+	# AI 暗中选定标记牌
+	ai_mark_value = AIController.decide_mark(int(round_ingredient), card_pool, ai_points)
+	_show_pick_bar()
+	_update_buttons()
+	var nm := _ing_name(round_ingredient)
+	show_vn("国王", "今日是国王钦定的【%s】——%s。请双方各暗选一张牌（牌仍留在牌池，若最终被算入总点数才生效：%s）。你选哪张？" % [nm, _ing_note(), _ing_effect()])
+
+
+func _on_mark_pick(v: int) -> void:
+	if state != State.PLAYER_TURN or phase != Phase.MARK:
+		return
+	player_mark_value = v
+	phase = Phase.IDLE
+	_hide_pick_bar()
+	_update_buttons()
+	_start_player_turn()
+
+
+func _show_pick_bar() -> void:
+	if _pick_bar == null:
+		return
+	_pick_bar.visible = true
+	for b in _pick_buttons:
+		var val: int = b.get_meta("mark_val")
+		b.disabled = not card_pool.has(val)
+
+
+func _hide_pick_bar() -> void:
+	if _pick_bar != null:
+		_pick_bar.visible = false
+
+
+func _ing_name(ing: Ingredient) -> String:
+	return "怀旧节" if ing == Ingredient.EXPIRED else "新鲜日"
+
+
+func _ing_effect() -> String:
+	return "被计入者多扣一点血" if round_ingredient == Ingredient.EXPIRED else "被计入者回一点血"
+
+
+func _ing_note() -> String:
+	return "陈年过气、混入会倒扣" if round_ingredient == Ingredient.EXPIRED else "现采新鲜、掺入能回血"
+
+
+## 常驻指示：显示今日料种（闹钟样式，红=怀旧节 / 绿=新鲜日）
+func _update_day_chip() -> void:
+	if _day_chip_label == null:
+		return
+	var nm := _ing_name(round_ingredient)
+	var color := Color(0.95, 0.3, 0.3) if round_ingredient == Ingredient.EXPIRED else Color(0.3, 0.9, 0.4)
+	var note := "有牌料稍含异味" if round_ingredient == Ingredient.EXPIRED else "有牌料鲜美异常"
+	_day_chip_label.text = "今日：%s｜%s" % [nm, note]
+	_day_chip_label.add_theme_color_override("font_color", color)
+	_day_chip_style.border_color = color
+	_day_chip.reset_size()  # 按文本实际长度自适应宽高
+	_day_chip.visible = true
 
 
 ## 玩家：加料（抽 1 张，看到后决定保留/跳过）
@@ -666,6 +861,7 @@ func _start_ai_turn() -> void:
 	phase = Phase.IDLE
 	_update_buttons()
 	_ai_timer.start(randf_range(0.5, AI_THINK_MAX))
+	_cam_push_in()
 	show_vn("红队", "红队思考中……（加料 / 开牌）")
 
 
@@ -688,7 +884,7 @@ func _on_ai_turn_timeout() -> void:
 	await _spawn_deal(slot, v)
 	_busy = false
 	# AI 看自己的牌，决定保留/跳过
-	var keep := AIController.decide_keep(ai_points, v)
+	var keep := AIController.decide_keep(ai_points, v, ai_mark_value, round_ingredient == Ingredient.REFINED)
 	if keep:
 		ai_points += v
 		if slot.card3d != null:
@@ -713,6 +909,7 @@ func _start_player_turn() -> void:
 	state = State.PLAYER_TURN
 	phase = Phase.IDLE
 	_update_buttons()
+	_cam_player_push()
 	show_vn("你", "轮到你了。总分 %d：加料（抽牌）或 铃铛（开牌）。" % player_points)
 
 
@@ -729,7 +926,8 @@ func _update_scores() -> void:
 func _update_buttons() -> void:
 	var player_turn := state == State.PLAYER_TURN
 	var deciding := player_turn and phase == Phase.DECIDE
-	var can_act := player_turn and not deciding and not _busy
+	var marking := player_turn and phase == Phase.MARK
+	var can_act := player_turn and not deciding and not marking and not _busy
 
 	_draw_btn.visible = can_act
 	_draw_btn.set_enabled(can_act and not _slots_full(_player_slots) and not card_pool.is_empty())
@@ -754,10 +952,18 @@ func _resolve() -> void:
 	_vn_button.visible = true
 
 	# 结算：保留(明牌)保持翻开；跳过的保持牌背 + ✕，不强制翻开（体现"弃牌"）
-	var p_ok := player_points >= KING_MIN and player_points <= BUST_LIMIT
-	var a_ok := ai_points >= KING_MIN and ai_points <= BUST_LIMIT
+	var p_bust := player_points > BUST_LIMIT
+	var a_bust := ai_points > BUST_LIMIT
+	var p_ok := player_points >= KING_MIN and not p_bust
+	var a_ok := ai_points >= KING_MIN and not a_bust
 	var result := ""
-	if not p_ok and not a_ok:
+	if p_bust and not a_bust:
+		result = "ai"      # 我爆牌 => 判负
+	elif a_bust and not p_bust:
+		result = "player"  # 红队爆牌 => 判负
+	elif p_bust and a_bust:
+		result = "draw"    # 双爆 => 平局
+	elif not p_ok and not a_ok:
 		result = "draw"
 	elif p_ok and not a_ok:
 		result = "player"
@@ -773,33 +979,77 @@ func _resolve() -> void:
 	var msg := ""
 	var portrait := "国王"
 	if result == "player":
-		msg = "你以 %d 点（18~21）博得国王欢心！红队（%d 点）被扔进汤锅。你赢了本局！" % [player_points, ai_points]
+		if a_bust:
+			msg = "红队爆牌了（%d 点，超过 21）！你以 %d 点获胜，红队被扔进汤锅。你赢了本局！" % [ai_points, player_points]
+		else:
+			msg = "你以 %d 点（18~21）博得国王欢心！红队（%d 点）被扔进汤锅。你赢了本局！" % [player_points, ai_points]
 		portrait = "你"
 	elif result == "ai":
-		msg = "红队以 %d 点胜出。你的 %d 点没能赢得青睐……你输了本局。" % [ai_points, player_points]
+		if p_bust:
+			msg = "你爆牌了（%d 点，超过 21）！红队以 %d 点胜出，你输了本局。" % [player_points, ai_points]
+		else:
+			msg = "红队以 %d 点胜出。你的 %d 点没能赢得青睐……你输了本局。" % [ai_points, player_points]
 		portrait = "红队"
 	else:
-		msg = "双方均未达标（或平局），国王拂袖而去，重上一道菜。（你 %d / 红队 %d）" % [player_points, ai_points]
+		if p_bust and a_bust:
+			msg = "双方都爆牌了……国王摇头，这一锅作废。（你 %d / 红队 %d）" % [player_points, ai_points]
+		else:
+			msg = "双方均未达标（或平局），国王拂袖而去，重上一道菜。（你 %d / 红队 %d）" % [player_points, ai_points]
 		portrait = "国王"
+
+	# ---- 过期料/精制料：被计入哪一方的手就影响哪一方 ----
+	var p_counted := _counted_values(_player_slots)
+	var a_counted := _counted_values(_ai_slots)
+	var hit_desc: Array[String] = []
+	var processed: Dictionary = {}
+	for mv in [player_mark_value, ai_mark_value]:
+		if mv == 0 or processed.has(mv):
+			continue
+		processed[mv] = true
+		if p_counted.has(mv):
+			_apply_ingredient_life(Side.PLAYER)
+			hit_desc.append(_ing_hit_desc(Side.PLAYER, mv))
+		if a_counted.has(mv):
+			_apply_ingredient_life(Side.AI)
+			hit_desc.append(_ing_hit_desc(Side.AI, mv))
+	if not hit_desc.is_empty():
+		msg += "\n（" + "；".join(hit_desc) + "）"
 
 	# 电量格：本局失败方扣 1 格（平局双方都不扣）
 	var match_over := false
 	if result == "player":
 		ai_lives = maxi(0, ai_lives - 1)
 		msg += "\n红队电量 -1（剩余 %d）。" % ai_lives
-		if ai_lives <= 0:
-			match_over = true
-			msg += "\n红队电量尽失，你赢下整场盛宴！"
 	elif result == "ai":
 		player_lives = maxi(0, player_lives - 1)
 		msg += "\n你电量 -1（剩余 %d）。" % player_lives
-		if player_lives <= 0:
-			match_over = true
-			msg += "\n你的电量尽失，红队赢下整场盛宴！"
+	if player_lives <= 0:
+		match_over = true
+		msg += "\n你的电量尽失，红队赢下整场盛宴！"
+	if ai_lives <= 0:
+		match_over = true
+		msg += "\n红队电量尽失，你赢下整场盛宴！"
 	_update_lives()
 
 	_vn_button.text = "重来" if match_over else "下一局"
 	show_vn(portrait, msg)
+
+	# 结算演出（闪切镜头暂不启用）：默认镜头下播角色反应；如需运镜改 USE_SETTLE_CAM=true
+	var loser_side: int = Side.PLAYER if result == "ai" else (Side.AI if result == "player" else Side.PLAYER)
+	var winner_side: int = Side.PLAYER if result == "player" else (Side.AI if result == "ai" else Side.PLAYER)
+	if USE_SETTLE_CAM:
+		var shots: Array = []
+		shots.append(_phone_shot(loser_side))
+		shots.append(_char_shot(loser_side, "hurt"))
+		if result != "draw":
+			shots.append(_char_shot(winner_side, "happy"))
+		_vn_button.disabled = true
+		await _play_cam_seq(shots)
+		_vn_button.disabled = false
+	else:
+		_char_react(_char_for_side(loser_side), "hurt")
+		if result != "draw":
+			_char_react(_char_for_side(winner_side), "happy")
 
 
 ## VN 面板按钮：教程中=跳过教程；整场结束=重来；否则下一局
@@ -847,3 +1097,117 @@ func _next_empty(slots: Array[CardSlot3D]) -> CardSlot3D:
 
 func _deal_source() -> Vector3:
 	return Vector3(0, 4.0, 0.4)
+
+
+## 收集某方"被计入总点数"的牌值（保留=计入；跳过/弃牌不计入）
+func _counted_values(slots: Array[CardSlot3D]) -> Array[int]:
+	var vals: Array[int] = []
+	for s in slots:
+		if s.occupied and not s.skipped and s.card3d != null:
+			vals.append(s.card3d.value)
+	return vals
+
+
+## 对一方应用本轮料种的命数修正（过期-1 / 精制+1，封顶 START_LIVES）
+func _apply_ingredient_life(side: int) -> void:
+	if side == Side.PLAYER:
+		if round_ingredient == Ingredient.EXPIRED:
+			player_lives = maxi(0, player_lives - 1)
+		else:
+			player_lives = mini(START_LIVES, player_lives + 1)
+	else:
+		if round_ingredient == Ingredient.EXPIRED:
+			ai_lives = maxi(0, ai_lives - 1)
+		else:
+			ai_lives = mini(START_LIVES, ai_lives + 1)
+
+
+func _ing_hit_desc(side: int, mv: int) -> String:
+	var who := "你" if side == Side.PLAYER else "红队"
+	var act := "在怀旧节被陈年料缠上，电量 -1" if round_ingredient == Ingredient.EXPIRED else "在新鲜日尝到鲜料，电量 +1"
+	return "%s %s（牌 %d）" % [who, act, mv]
+
+
+# ============================================================
+#  镜头演出
+# ============================================================
+func _camera_move_to(target_pos: Vector3, look_at: Vector3, dur: float) -> void:
+	if _camera == null:
+		return
+	_kill_cam_tw()
+	var start := _camera.position
+	_cam_tw = create_tween()
+	_cam_tw.tween_method(_camera_track.bind(target_pos, look_at), start, target_pos, dur)\
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+
+
+func _camera_track(p: Vector3, target_pos: Vector3, look_at: Vector3) -> void:
+	_camera.position = p
+	_camera.look_at(look_at, Vector3.UP)
+
+
+func _kill_cam_tw() -> void:
+	if _cam_tw != null:
+		_cam_tw.kill()
+		_cam_tw = null
+
+
+## 某侧手机特写镜头
+func _phone_shot(side: int) -> Dictionary:
+	if side == Side.PLAYER:
+		return {"pos": Vector3(2.0, 1.5, 2.7), "look": Vector3(2.0, 0.6, 1.5), "dur": 0.7, "hold": 0.55, "react": ""}
+	return {"pos": Vector3(-2.0, 1.5, -0.2), "look": Vector3(-2.0, 0.6, -1.5), "dur": 0.7, "hold": 0.55, "react": ""}
+
+
+## 某侧角色镜头，带反应动画
+func _char_shot(side: int, react: String) -> Dictionary:
+	if side == Side.PLAYER:
+		return {"pos": Vector3(2.3, 1.35, 1.7), "look": Vector3(2.3, 1.0, -0.4), "dur": 0.7, "hold": 0.9, "react": react, "char": _player_char}
+	return {"pos": Vector3(-2.3, 1.35, 1.7), "look": Vector3(-2.3, 1.0, -0.4), "dur": 0.7, "hold": 0.9, "react": react, "char": _ai_char}
+
+
+func _char_for_side(side: int) -> Node3D:
+	return _player_char if side == Side.PLAYER else _ai_char
+
+
+## 结算镜头序列：依次运镜，播完回主位
+func _play_cam_seq(shots: Array) -> void:
+	if _camera == null:
+		return
+	var token := _cam_seq_token + 1
+	_cam_seq_token = token
+	_kill_cam_tw()
+	for shot in shots:
+		if token != _cam_seq_token:
+			return
+		_camera_move_to(shot["pos"], shot["look"], shot["dur"])
+		var react: String = shot.get("react", "")
+		var ch: Node3D = shot.get("char", null)
+		if react != "" and ch != null:
+			_char_react(ch, react)
+		await get_tree().create_timer(shot["hold"]).timeout
+	if token != _cam_seq_token:
+		return
+	_camera_move_to(_cam_home_pos, _cam_home_look, 0.8)
+	await get_tree().create_timer(0.8).timeout
+
+
+## 对手抽牌/思考时：镜头轻微推进（局部推近，不做闪切）
+func _cam_push_in() -> void:
+	if _camera == null:
+		return
+	_camera_move_to(Vector3(0.5, 2.5, 3.1), Vector3(0, 0.5, -0.6), 0.9)
+
+
+## 玩家回合：镜头比主位再稍微推近一点点
+func _cam_player_push() -> void:
+	if _camera == null:
+		return
+	_camera_move_to(Vector3(0.5, 2.8, 4.3), Vector3(0, 0.3, -0.4), 0.9)
+
+
+## 回到主位
+func _cam_push_out() -> void:
+	if _camera == null:
+		return
+	_camera_move_to(_cam_home_pos, _cam_home_look, 0.9)
