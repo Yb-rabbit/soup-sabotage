@@ -55,6 +55,16 @@ func play_sound() -> void:
 		_audio.play()
 
 
+## 铃铛“放缩”：压扁再回弹 + 响声
+func ring() -> void:
+	play_sound()
+	var tw := create_tween()
+	tw.tween_property(self, "scale", Vector3(0.85, 0.8, 0.85), 0.1)\
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tw.tween_property(self, "scale", Vector3.ONE, 0.3)\
+		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+
+
 func _build() -> void:
 	# 大块（钟身）+ 小块（铃锤）叠放，简单轮廓
 	var big := MeshInstance3D.new()

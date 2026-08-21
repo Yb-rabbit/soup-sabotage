@@ -6,6 +6,7 @@ extends Node3D
 
 var points := 0
 var lives := 0
+var _grayed := false  # 盲选模式：数字置暗灰，不按分数变色
 
 var _number: Label3D
 var _flash_tw: Tween = null
@@ -65,6 +66,10 @@ func set_points(p: int) -> void:
 	if _number == null:
 		return
 	_number.text = str(p)
+	if _grayed:
+		_stop_flash()
+		_number.modulate = Color(0.5, 0.5, 0.5)
+		return
 	if p > 21:
 		_number.modulate = Color(1.0, 0.25, 0.25)
 		_start_flash()
@@ -74,6 +79,14 @@ func set_points(p: int) -> void:
 	else:
 		_stop_flash()
 		_number.modulate = Color(0.95, 0.95, 0.95)
+
+
+## 盲选模式：置灰/恢复数字颜色（不按分数变色）
+func set_grayed(g: bool) -> void:
+	if _grayed == g:
+		return
+	_grayed = g
+	set_points(points)
 
 
 ## 设置剩余命数 -> 电量格

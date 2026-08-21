@@ -52,6 +52,12 @@ static func decide_keep(ai_points: int, drawn_value: int, mark_value: int = 0, m
 static func decide_mark(ingredient: int, pool: Array, ai_points: int) -> int:
 	if pool.is_empty():
 		return 0
+	# 参与概率：新鲜日高（回血有益）；怀旧节较低（保留“背刺”威胁）
+	var participate := 0.85
+	if ingredient == 0:
+		participate = 0.45
+	if randf() > participate:
+		return 0  # 不参与（和平交易）
 	var low := [1, 2, 3, 4, 5]
 	if ingredient == 1:  # 新鲜日：低分值自己更容易保留受益
 		for v in low:
@@ -72,6 +78,6 @@ static func _bust_probability(points: int, pool_size: int) -> float:
 	var threshold := BUST_LIMIT - points
 	if threshold < 1:
 		return 1.0
-	var dangerous := maxi(0, 10 - threshold)
+	var dangerous := maxi(0, 13 - threshold)
 	return float(dangerous) / float(pool_size)
 

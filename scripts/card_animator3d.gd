@@ -39,7 +39,6 @@ func _finish_deal(card: Card3D, target: CardSlot3D, value: int) -> void:
 	card.rotation_degrees.x = 180.0  # 确保落地牌背朝上
 	target.set_occupied(card)
 	card.settle_on_slot()
-	_spawn_float(target, value)
 	_busy = false
 	deal_finished.emit(target)
 

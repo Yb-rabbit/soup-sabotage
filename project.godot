@@ -11,7 +11,7 @@ config_version=5
 [application]
 
 config/name="皇家厨房：决斗餐桌"
-run/main_scene="res://main.tscn"
+run/main_scene="res://MainMenu.tscn"
 config/features=PackedStringArray("4.7", "Forward Plus")
 config/icon="res://icon.svg"
 

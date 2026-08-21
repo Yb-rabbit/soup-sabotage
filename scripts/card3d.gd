@@ -7,6 +7,7 @@ extends Node3D
 signal hovered
 signal unhovered
 signal clicked
+signal invalid_clicked
 
 const CARD_W := 0.6
 const CARD_H := 0.85
@@ -14,6 +15,8 @@ const CARD_H := 0.85
 var value := 0
 var face_up := false
 var hovering := false
+var own := false        # 是否为玩家（我方）的牌
+var peekable := false   # 盲选下点击可“拿起查看”
 var _hover_tw: Tween = null
 var _rest_y := 0.0  # 落槽基准高度（权威基准，翻面/悬停/点击都以它回位，避免位置漂移）
 
@@ -162,10 +165,10 @@ func _on_mouse_exited() -> void:
 func _on_area_input_event(_camera: Node, event: InputEvent, _pos: Vector3, _normal: Vector3, _idx: int) -> void:
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
 		clicked.emit()
-		if face_up:
-			_spin_inspect()
-		else:
-			_reject_scale()
+		if not own:
+			invalid_clicked.emit()
+		elif peekable:
+			_peek_view()
 
 
 ## 发牌落地后调用：记录落槽基准高度，避免悬停动画与发牌冲突
@@ -176,6 +179,25 @@ func settle_on_slot() -> void:
 		_hover_tw = null
 	_rest_y = position.y
 	_reset_glow()
+
+
+## 盲选：点击自己的暗牌，稍微抬高并垂直桌面/卡槽看牌面，看完放回（不公开平放）
+func _peek_view() -> void:
+	if _hover_tw != null:
+		_hover_tw.kill()
+		_hover_tw = null
+	hovering = false
+	var base_y := position.y
+	var base_rot_x := rotation_degrees.x
+	var tw := create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(self, "position:y", base_y + 0.35, 0.2).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.tween_property(self, "rotation_degrees:x", 90.0, 0.25).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
+	await get_tree().create_timer(0.9).timeout
+	var tw2 := create_tween()
+	tw2.set_parallel(true)
+	tw2.tween_property(self, "position:y", base_y, 0.2).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tw2.tween_property(self, "rotation_degrees:x", base_rot_x, 0.25).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
 
 
 ## 点击：先结束悬停回到落槽高度，再做 360° 自旋检视（不暴露数字，仅表现力）
