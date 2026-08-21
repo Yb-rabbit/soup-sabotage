@@ -59,6 +59,7 @@ var _menu: Control                 # 进入过渡黑屏遮罩（原内置“开�
 
 # ---- 教程状态 ----
 var _tut_step := 0
+var _tut_draw_stage := 0  # 教程抽牌演示阶段：0未抽 / 1已抽固定6 / 2特殊日演示
 var _tut_demo_tw: Tween = null
 var _highlight_ring: Node3D = null
 var _ring_tw: Tween = null  # 高亮光环上下浮动动效
@@ -87,6 +88,7 @@ var _pick_buttons: Array[Button] = []
 var _partic_bar: HBoxContainer
 var _partic_buttons: Array[Button] = []
 var _mode_bar: HBoxContainer
+var _mode_hint: Label  # 模式选择按钮悬停提示小字
 var _mode_buttons: Array[Button] = []
 var _blind_mode := false     # 盲选模式开关
 var _blind_unlocked := false # 通关（整场胜利一次）后解锁盲选
@@ -562,14 +564,14 @@ func _build_ui() -> void:
 	_partic_bar.visible = false
 	_root.add_child(_partic_bar)
 	var b_in := Button.new()
-	b_in.text = "参与料效"
+	b_in.text = "加点猛料"
 	b_in.custom_minimum_size = Vector2(200, 50)
 	b_in.add_theme_font_size_override("font_size", 18)
 	b_in.pressed.connect(_on_participate.bind(true))
 	_partic_bar.add_child(b_in)
 	_partic_buttons.append(b_in)
 	var b_out := Button.new()
-	b_out.text = "不参与（和平交易）"
+	b_out.text = "不参与（诚信互刷）"
 	b_out.custom_minimum_size = Vector2(220, 50)
 	b_out.add_theme_font_size_override("font_size", 18)
 	b_out.pressed.connect(_on_participate.bind(false))
@@ -593,6 +595,9 @@ func _build_ui() -> void:
 	b_cur.custom_minimum_size = Vector2(200, 50)
 	b_cur.add_theme_font_size_override("font_size", 18)
 	b_cur.pressed.connect(_on_mode_select.bind(false))
+	b_cur.set_meta("mode_hint", "双方牌点公开")
+	b_cur.mouse_entered.connect(_on_mode_hover.bind(b_cur))
+	b_cur.mouse_exited.connect(_hide_mode_hint)
 	_mode_bar.add_child(b_cur)
 	_mode_buttons.append(b_cur)
 	var b_blind := Button.new()
@@ -600,8 +605,22 @@ func _build_ui() -> void:
 	b_blind.custom_minimum_size = Vector2(200, 50)
 	b_blind.add_theme_font_size_override("font_size", 18)
 	b_blind.pressed.connect(_on_mode_select.bind(true))
+	b_blind.set_meta("mode_hint", "首牌及弃牌公开")
+	b_blind.mouse_entered.connect(_on_mode_hover.bind(b_blind))
+	b_blind.mouse_exited.connect(_hide_mode_hint)
 	_mode_bar.add_child(b_blind)
 	_mode_buttons.append(b_blind)
+	# 模式选择悬停提示小字
+	_mode_hint = Label.new()
+	_mode_hint.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
+	_mode_hint.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_mode_hint.offset_top = -140
+	_mode_hint.offset_bottom = -135
+	_mode_hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_mode_hint.add_theme_font_size_override("font_size", 14)
+	_mode_hint.add_theme_color_override("font_color", Color(0.95, 0.85, 0.6))
+	_mode_hint.visible = false
+	_root.add_child(_mode_hint)
 
 	# “挡”无效提示（点击对方牌时）
 	_block_label = Label.new()
@@ -672,7 +691,7 @@ func _tut_show_step() -> void:
 			_tut_highlight(_bell)
 			_vn_button.text = "跳过教程，直接开始"
 			_vn_button.visible = true
-			show_vn("侍从", "欢迎来到皇家厨房！桌上这个铃铛是「开牌」：轮到你时敲响它，双方立刻亮牌比大小、决胜负。先点「了解」继续看看怎么算分。")
+			show_vn("侍从", "欢迎来到后厨！桌上这个铃铛是「开牌」：轮到你时敲响它，双方立刻亮牌比大小、决胜负。")
 		1:
 			_tut_highlight(_player_phone)
 			_vn_button.visible = false
@@ -682,7 +701,7 @@ func _tut_show_step() -> void:
 			_tut_highlight(_player_phone)
 			_vn_button.visible = false
 			_tut_run_demo(2)
-			show_vn("侍从", "但要小心！总分超过 21 会爆牌直接判负，不足 18 同样不算赢。所以拿牌、加多少料，都得盘算好。")
+			show_vn("侍从", "但要小心！总分超过 21 会爆牌判负，不足 18 同样不算赢。所以拿牌、加多少料，都得盘算好。")
 		3:
 			_tut_highlight(_player_phone)
 			_vn_button.visible = false
@@ -691,11 +710,25 @@ func _tut_show_step() -> void:
 		4:
 			_tut_highlight(_draw_btn)
 			_vn_button.visible = false
-			show_vn("你", "轮到我就按「加料」抽一张牌，再看情况选「保留」（计入总分）或「跳过」（弃牌、占一格）。控制好点数别爆啦。")
+			_tut_draw_stage = 0
+			_update_buttons()
+			# 教程演示特殊日（怀旧节：被计入者扣血）；牌池与正式对局一致
+			round_ingredient = Ingredient.EXPIRED
+			card_pool.clear()
+			for v in range(1, 14):
+				card_pool.append(v)
+			card_pool.shuffle()
+			_update_day_chip()
+			player_points = 0
+			player_lives = START_LIVES
+			_update_scores()
+			_update_lives()
+			show_vn("侍从", "【怀旧节】演示！按「加料」，会随机抽一张牌。再点一次「加料」，让你试试料效和电量关系。")
 		5:
 			_tut_clear_highlight()
+			_tut_cleanup_demo()
 			_vn_button.visible = false
-			show_vn("侍从", "规则都懂了吧？点「开始游戏」，选个模式，开启你的皇家晚宴。")
+			show_vn("侍从", "规则都懂了吧？点「开始游戏」，选个模式，开启你的皇家晚宴。好运！")
 		_:
 			pass
 
@@ -738,6 +771,83 @@ func _tut_dim_all(except_node: Node3D) -> void:
 
 
 ## 演示动画（一次性清晰序列：怎么赢 / 失败扣血 / 重新亮电；不循环，避免"自主回血"感）
+## 教程抽牌演示：像正式对局一样随机抽牌 + 特殊日图钉；再点展示扣血（同步血量动画）
+func _tut_handle_draw() -> void:
+	if _busy:
+		return
+	var slot: CardSlot3D
+	if _tut_draw_stage == 0:
+		_tut_draw_stage = 1
+		slot = _next_empty(_player_slots)
+		if slot == null:
+			return
+		var v := _draw_from_pool()
+		_busy = true
+		await _spawn_deal(slot, v)
+		if slot.card3d != null:
+			slot.card3d.reveal()
+			_add_pin_marker(slot.card3d)
+		_busy = false
+		player_points = v
+		_update_scores()
+		show_vn("你", "你抽到 %d。看牌角的图钉——这是【怀旧节】的料，被计入会倒扣电量。再点一次「加料」看料效。" % v)
+		return
+	if _tut_draw_stage == 1:
+		_tut_draw_stage = 2
+		slot = _next_empty(_player_slots)
+		if slot == null:
+			return
+		var v2 := _draw_from_pool()
+		_busy = true
+		await _spawn_deal(slot, v2)
+		if slot.card3d != null:
+			slot.card3d.reveal()
+			_add_pin_marker(slot.card3d)
+		_busy = false
+		player_points += v2
+		_update_scores()
+		# 怀旧节：被计入的「陈年料」扣血（同步血量动画）
+		player_lives = maxi(0, player_lives - 1)
+		_update_lives()
+		show_vn("国王", "这张带图钉的「陈年料」%d 被计入，要扣你的电池！ -1（剩余 %d）。" % [v2, player_lives])
+		return
+	show_vn("提示", "演示完毕，点「了解」继续。")
+
+
+## 教程抽牌演示完毕：清理演示痕迹，回到干净待开场布局（不显示特殊日/总分/抽牌/铃铛）
+func _tut_cleanup_demo() -> void:
+	for s in _player_slots:
+		if s.card3d != null:
+			s.card3d.queue_free()
+			s.card3d = null
+		s.reset()
+	for s in _ai_slots:
+		if s.card3d != null:
+			s.card3d.queue_free()
+			s.card3d = null
+		s.reset()
+	# 不显示特殊日
+	round_ingredient = Ingredient.NONE
+	if _day_chip != null:
+		_day_chip.visible = false
+	# 总分归零
+	player_points = 0
+	ai_points = 0
+	_update_scores()
+	# 血量恢复满
+	player_lives = START_LIVES
+	ai_lives = START_LIVES
+	_update_lives()
+	# 隐藏抽牌/铃铛/牌池标签（干净待开场布局）
+	if _draw_btn != null:
+		_draw_btn.visible = false
+	if _bell != null:
+		_bell.visible = false
+	if _deck_label != null:
+		_deck_label.visible = false
+	card_pool.clear()
+
+
 func _tut_run_demo(step: int) -> void:
 	_tut_kill_demo()
 	var tw := create_tween()
@@ -771,6 +881,39 @@ func _tut_kill_demo() -> void:
 
 
 ## 整场开始/重来：重置双方生命，再开第一局
+## 正式对局开场过场：一张牌从远处旋转翻面飞入、亮牌，随后开局
+func _play_match_intro() -> void:
+	var card := Card3D.new()
+	card.setup(randi_range(1, 13))
+	card.own = true
+	add_child(card)
+	card.position = Vector3(0, 6.0, -8.0)
+	card.rotation_degrees.x = 180.0
+	card.scale = Vector3(0.18, 0.18, 0.18)
+	# 从远处旋转翻面飞入桌面中央
+	var tw := create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(card, "position", Vector3(0, 1.1, 0.4), 0.7)\
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
+	tw.tween_property(card, "scale", Vector3.ONE, 0.7)\
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.tween_property(card, "rotation_degrees:y", 720.0, 0.7)\
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
+	await tw.finished
+	# 亮牌
+	card.reveal()
+	await get_tree().create_timer(0.9).timeout
+	# 预告牌退场
+	var tw2 := create_tween()
+	tw2.set_parallel(true)
+	tw2.tween_property(card, "position:y", 3.2, 0.4)\
+		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tw2.tween_property(card, "scale", Vector3(0.05, 0.05, 0.05), 0.4)
+	tw2.tween_property(card, "rotation_degrees:y", 720.0, 0.4)
+	await tw2.finished
+	card.queue_free()
+
+
 func _start_match() -> void:
 	_tut_kill_demo()
 	_tut_clear_highlight()
@@ -778,6 +921,7 @@ func _start_match() -> void:
 	ai_lives = START_LIVES
 	_consecutive_draws = 0
 	_update_lives()
+	await _play_match_intro()
 	_start_round()
 
 
@@ -952,32 +1096,31 @@ func _play_tomato_splash() -> void:
 	var mesh := MeshInstance3D.new()
 	mesh.mesh = box
 	mesh.material_override = mat
-	mesh.position = Vector3(0, 6.5, 13)
-	mesh.scale = Vector3(0.12, 0.12, 0.12)
+	mesh.position = Vector3(0, 7.0, -7.0)
+	mesh.scale = Vector3(0.15, 0.15, 0.15)
 	add_child(mesh)
 	var flash := ColorRect.new()
 	flash.color = Color(1, 0, 0, 0)
 	flash.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	flash.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_root.add_child(flash)
-	# 抛物逼近（远处 → 砸到面前，同时放大）
+	# 从远处(场景深处)抛物砸向屏幕，同时放大
 	var tw := create_tween()
-	tw.tween_property(mesh, "position", Vector3(0, 3.0, 2.6), 0.5)\
+	tw.tween_property(mesh, "position", Vector3(0, 2.8, 0.5), 0.55)\
 		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
-	tw.parallel().tween_property(mesh, "scale", Vector3(2.4, 2.4, 2.4), 0.5)\
+	tw.parallel().tween_property(mesh, "scale", Vector3(2.6, 2.6, 2.6), 0.55)\
 		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 	await tw.finished
-	# 砸中：闪红 + 震屏
+	# 砸中屏幕：同时全屏变红 + 震屏
+	_camera_shake_burst(0.5)
 	var ftw := create_tween()
-	ftw.tween_property(flash, "color:a", 0.9, 0.06)
-	ftw.tween_property(flash, "color:a", 0.0, 0.3)
-	_camera_shake_burst(0.4)
+	ftw.tween_property(flash, "color:a", 1.0, 0.06)
+	ftw.tween_property(flash, "color:a", 0.0, 0.5)
 	# 下降退场
 	var dtw := create_tween()
-	dtw.tween_property(mesh, "position:y", -2.2, 0.35)\
+	dtw.tween_property(mesh, "position:y", -2.0, 0.4)\
 		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
-	dtw.parallel().tween_property(mesh, "position:z", 1.2, 0.35)
-	dtw.parallel().tween_property(mesh, "scale", Vector3(0.3, 0.3, 0.3), 0.35)
+	dtw.parallel().tween_property(mesh, "scale", Vector3(0.4, 0.4, 0.4), 0.4)
 	await dtw.finished
 	mesh.queue_free()
 	await get_tree().create_timer(0.15).timeout
@@ -998,6 +1141,19 @@ func _camera_shake_burst(amp: float) -> void:
 
 
 ## 通关后解锁：新局开头显示“现行/盲选”选择
+## 模式选择悬停：按钮下方显示简要介绍小字
+func _on_mode_hover(btn: Button) -> void:
+	if _mode_hint == null:
+		return
+	_mode_hint.text = str(btn.get_meta("mode_hint", ""))
+	_mode_hint.visible = true
+
+
+func _hide_mode_hint() -> void:
+	if _mode_hint != null:
+		_mode_hint.visible = false
+
+
 func _show_mode_bar() -> void:
 	if _mode_bar == null:
 		_start_match()
@@ -1069,6 +1225,9 @@ func _update_day_chip() -> void:
 
 ## 玩家：加料（抽 1 张，看到后决定保留/跳过）
 func _on_draw() -> void:
+	if state == State.TUTORIAL and _tut_step == 4:
+		_tut_handle_draw()
+		return
 	if state != State.PLAYER_TURN or phase != Phase.IDLE or _busy:
 		return
 	if _slots_full(_player_slots):
@@ -1109,7 +1268,7 @@ func _on_keep() -> void:
 		_card_place_down(_pending_slot.card3d)
 	_update_scores()
 	if player_points > BUST_LIMIT:
-		_speak_scene("你", "你保留 %d，总分 %d —— 你超过 21 了！别急着认输，看红队会不会也爆。" % [_pending_value, player_points])
+		_speak_scene("你", "你保留 %d，总分 %d —— 你超过 21 了！别急着认输，看对方会不会也爆。" % [_pending_value, player_points])
 		await get_tree().create_timer(0.8).timeout
 	_start_ai_turn()
 
@@ -1140,7 +1299,7 @@ func _start_ai_turn() -> void:
 	_update_buttons()
 	_ai_timer.start(randf_range(0.5, AI_THINK_MAX))
 	_cam_push_in()
-	_speak_scene("红队", "红队思考中……")
+	_speak_scene("红队", "深度思考中……")
 
 
 func _on_ai_turn_timeout() -> void:
@@ -1215,6 +1374,17 @@ func _update_scores() -> void:
 ## 依据 state 与 phase 设置 3D 交互控件的可见/可点
 func _update_buttons() -> void:
 	_update_peek()
+	if state == State.TUTORIAL:
+		# 教程第4步：允许点「加料」做抽牌演示，其余按钮隐藏
+		_draw_btn.visible = _tut_step == 4
+		_draw_btn.set_enabled(_tut_step == 4)
+		_keep_btn.visible = false
+		_keep_btn.set_enabled(false)
+		_skip_btn.visible = false
+		_skip_btn.set_enabled(false)
+		_bell.visible = false
+		_bell.set_enabled(false)
+		return
 	var player_turn := state == State.PLAYER_TURN
 	var deciding := player_turn and phase == Phase.DECIDE
 	var marking := player_turn and phase == Phase.MARK
@@ -1281,7 +1451,7 @@ func _resolve() -> void:
 		elif a_bust:
 			msg = "红队爆牌了（%d 点，超过 21）！你以 %d 点获胜，你过关！" % [ai_points, player_points]
 		else:
-			msg = "你以 %d 点（18~21）博得国王欢心！对方（%d 点）被扔进汤锅。赢！" % [player_points, ai_points]
+			msg = "你以 %d 点博得国王欢心！对方（%d 点）被扔进汤锅。赢！" % [player_points, ai_points]
 		portrait = "你"
 	elif result == "ai":
 		if p_bust and a_bust:
@@ -1295,7 +1465,7 @@ func _resolve() -> void:
 		if p_bust and a_bust:
 			msg = "双方爆牌且同分（%d 点），国王摇头说，这锅坏菜了。" % player_points
 		else:
-			msg = "双方均未达标（或平局），国王表示菜就多练。（你 %d / 红队 %d）" % [player_points, ai_points]
+			msg = "双方均未达标，简直拉完了，国王表示菜就多练。（你 %d / 红队 %d）" % [player_points, ai_points]
 		portrait = "国王"
 
 	# ---- 过期料/精制料：被计入哪一方的手就影响哪一方 ----
@@ -1399,6 +1569,7 @@ func _resolve() -> void:
 ## VN 面板按钮：教程中=跳过教程；整场结束=重来；否则下一局
 func _on_vn_button_pressed() -> void:
 	if state == State.TUTORIAL:
+		_tut_cleanup_demo()
 		_show_mode_select_flow()
 		return
 	if player_lives <= 0 or ai_lives <= 0:
