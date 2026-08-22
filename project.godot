@@ -10,7 +10,8 @@ config_version=5
 
 [application]
 
-config/name="皇家厨房：决斗餐桌"
+config/name="Savage Odds: Ultimate Punishment"
+config/description="要么赢下这碗汤，要么成为汤里的料"
 run/main_scene="res://MainMenu.tscn"
 config/features=PackedStringArray("4.7", "Forward Plus")
 config/icon="res://icon.svg"
@@ -27,6 +28,10 @@ window/stretch/aspect="expand"
 [editor_plugins]
 
 enabled=PackedStringArray("res://addons/godot_mcp/plugin.cfg")
+
+[gui]
+
+theme/custom_font="res://scripts/SIMYOU.TTF"
 
 [physics]
 

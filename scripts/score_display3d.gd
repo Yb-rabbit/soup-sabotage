@@ -37,6 +37,7 @@ func _build() -> void:
 	# 数字（面朝 +Z）
 	_number = Label3D.new()
 	_number.text = "0"
+	_number.font = load("res://scripts/STENCIL.TTF")
 	_number.font_size = 128
 	_number.pixel_size = 0.0016
 	_number.modulate = Color(0.95, 0.95, 0.95)

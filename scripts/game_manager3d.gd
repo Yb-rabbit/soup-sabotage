@@ -102,15 +102,55 @@ var _cam_home_pos := Vector3(0.5, 2.9, 4.8)
 var _cam_home_look := Vector3(0, 0.0, -0.2)
 
 
+var _drop_player: AudioStreamPlayer        # 落牌音效播放器
+var _card_box: MeshInstance3D = null       # 场景牌盒装饰（掀桌时爆炸）
+
+
 func _ready() -> void:
 	_build_3d()
 	_build_ui()
+	_setup_drop_sound()
 	_ai_timer = Timer.new()
 	_ai_timer.one_shot = true
 	_ai_timer.timeout.connect(_on_ai_turn_timeout)
 	add_child(_ai_timer)
 	# 进入后黑屏过渡 → 直接显示模式选择（现行/盲选），不再有内置“开始”菜单（二重验证）
 	_play_intro_to_mode()
+
+
+## 初始化落牌音效播放器
+func _setup_drop_sound() -> void:
+	_drop_player = AudioStreamPlayer.new()
+	_drop_player.volume_db = 3.0
+	add_child(_drop_player)
+
+
+## 播放落牌音（阻尼正弦低频"咚"）
+func _play_drop_sound() -> void:
+	if _drop_player == null:
+		return
+	var rate := 44100
+	var dur := 0.12
+	var freq := 400.0
+	var decay := 20.0
+	var n := int(rate * dur)
+	var data := PackedByteArray()
+	data.resize(n * 2)
+	var time := 0.0
+	var inc := 1.0 / rate
+	for i in n:
+		var v := sin(TAU * freq * time) * exp(-decay * time) * 1.0
+		var s := int(clampf(v * 32767.0, -32768.0, 32767.0))
+		data[i * 2] = s & 0xFF
+		data[i * 2 + 1] = (s >> 8) & 0xFF
+		time += inc
+	var wav := AudioStreamWAV.new()
+	wav.format = AudioStreamWAV.FORMAT_16_BITS
+	wav.mix_rate = rate
+	wav.stereo = false
+	wav.data = data
+	_drop_player.stream = wav
+	_drop_player.play()
 
 
 # ============================================================
@@ -624,7 +664,7 @@ func _build_ui() -> void:
 
 	# “挡”无效提示（点击对方牌时）
 	_block_label = Label.new()
-	_block_label.text = "喂！那是对方的牌"
+	_block_label.text = "喂！你的小手不太干净啊……"
 	_block_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
 	_block_label.add_theme_font_size_override("font_size", 40)
 	_block_label.add_theme_color_override("font_color", Color(1.0, 0.45, 0.35))
@@ -668,6 +708,7 @@ func _start_tutorial() -> void:
 	_tut_step = 0
 	if _day_chip != null:
 		_day_chip.visible = false
+	_update_buttons()   # 统一管理按钮：加料/铃铛在加料引导(step4)前隐藏
 	_tut_show_step()
 
 
@@ -706,7 +747,7 @@ func _tut_show_step() -> void:
 			_tut_highlight(_player_phone)
 			_vn_button.visible = false
 			_tut_run_demo(3)
-			show_vn("侍从", "每输一局，手机上的电量会扣一格。一共 4 格，全灭就输掉整场——只有点「重来」才能重新点亮。")
+			show_vn("侍从", "每输一局，手机上的电量会扣一格。一共 4 格，全灭就输掉整场，可以「重来」，但那很菜。")
 		4:
 			_tut_highlight(_draw_btn)
 			_vn_button.visible = false
@@ -723,12 +764,13 @@ func _tut_show_step() -> void:
 			player_lives = START_LIVES
 			_update_scores()
 			_update_lives()
-			show_vn("侍从", "【怀旧节】演示！按「加料」，会随机抽一张牌。再点一次「加料」，让你试试料效和电量关系。")
+			show_vn("侍从", "有【怀旧节】或是别的节日！等到那一天……再说。点一次「加料」，让你知道料效和电量关系。")
 		5:
 			_tut_clear_highlight()
 			_tut_cleanup_demo()
+			_tut_next.visible = true   # 重新显示「开始游戏」（cleanup 会隐藏它）
 			_vn_button.visible = false
-			show_vn("侍从", "规则都懂了吧？点「开始游戏」，选个模式，开启你的皇家晚宴。好运！")
+			show_vn("侍从", "现在懂了吧？点「开始游戏」，开启你的皇家晚宴。好运！")
 		_:
 			pass
 
@@ -790,7 +832,7 @@ func _tut_handle_draw() -> void:
 		_busy = false
 		player_points = v
 		_update_scores()
-		show_vn("你", "你抽到 %d。看牌角的图钉——这是【怀旧节】的料，被计入会倒扣电量。再点一次「加料」看料效。" % v)
+		show_vn("侍从", "你抽到 %d。看牌角的标记——这是【怀旧节】的料，被计入会倒扣电量。再点一次「加料」看看料效。" % v)
 		return
 	if _tut_draw_stage == 1:
 		_tut_draw_stage = 2
@@ -811,7 +853,7 @@ func _tut_handle_draw() -> void:
 		_update_lives()
 		show_vn("国王", "这张带图钉的「陈年料」%d 被计入，要扣你的电池！ -1（剩余 %d）。" % [v2, player_lives])
 		return
-	show_vn("提示", "演示完毕，点「了解」继续。")
+	show_vn("提示", "请点「了解」继续。")
 
 
 ## 教程抽牌演示完毕：清理演示痕迹，回到干净待开场布局（不显示特殊日/总分/抽牌/铃铛）
@@ -846,6 +888,22 @@ func _tut_cleanup_demo() -> void:
 	if _deck_label != null:
 		_deck_label.visible = false
 	card_pool.clear()
+	# 完全退出教程：清理教学 UI 与残留（跳过/演示完都干净）
+	_tut_kill_demo()
+	_tut_clear_highlight()
+	if _vn_panel != null:
+		_vn_panel.visible = false
+	if _tut_next != null:
+		_tut_next.visible = false
+	if _vn_button != null:
+		_vn_button.visible = false
+	# 清理残留场景横幅（避免变黑未消失）
+	if _banner_label != null:
+		if _banner_tw != null:
+			_banner_tw.kill()
+			_banner_tw = null
+		_banner_label.queue_free()
+		_banner_label = null
 
 
 func _tut_run_demo(step: int) -> void:
@@ -881,37 +939,112 @@ func _tut_kill_demo() -> void:
 
 
 ## 整场开始/重来：重置双方生命，再开第一局
-## 正式对局开场过场：一张牌从远处旋转翻面飞入、亮牌，随后开局
+## 正式对局开场过场：13 张牌混洗收入牌盒 → 摄像机贴近牌盒 → 闪屏正式开始
 func _play_match_intro() -> void:
-	var card := Card3D.new()
-	card.setup(randi_range(1, 13))
-	card.own = true
-	add_child(card)
-	card.position = Vector3(0, 6.0, -8.0)
-	card.rotation_degrees.x = 180.0
-	card.scale = Vector3(0.18, 0.18, 0.18)
-	# 从远处旋转翻面飞入桌面中央
+	# 1. 场景装饰：显眼的牌盒立方体（后续仅作装饰）
+	var box_mat := StandardMaterial3D.new()
+	box_mat.albedo_color = Color(0.22, 0.2, 0.24)
+	box_mat.metallic = 0.9
+	box_mat.roughness = 0.35
+	box_mat.emission_enabled = true
+	box_mat.emission = Color(0.2, 0.12, 0.06)
+	box_mat.emission_energy_multiplier = 0.4
+	var box_mesh := BoxMesh.new()
+	box_mesh.size = Vector3(0.9, 0.7, 0.9)
+	var box := MeshInstance3D.new()
+	box.mesh = box_mesh
+	box.material_override = box_mat
+	box.position = Vector3(3.0, 0.35, 0.5)
+	add_child(box)
+	_card_box = box
+	_spawn_cardbox_smoke(box.position)   # 故障冒烟
+	# 2. 13 张牌混洗（牌背朝上，不显数字）
+	var cards: Array[Card3D] = []
+	for i in 13:
+		var c := Card3D.new()
+		c.setup(1)
+		c.own = true
+		add_child(c)
+		c.position = Vector3(0, 0.35, 0.4)
+		c.rotation_degrees.x = 180.0
+		c.scale = Vector3.ONE
+		cards.append(c)
+	# 洗牌：所有牌同时快速抬起翻转再落回（两轮）
+	for rep in 2:
+		var sw := create_tween()
+		sw.set_parallel(true)
+		for c in cards:
+			sw.tween_property(c, "position:y", 2.0 + randf_range(0, 0.4), 0.12)\
+				.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+			sw.tween_property(c, "rotation_degrees:y", c.rotation_degrees.y + 360.0, 0.24)\
+				.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
+			sw.tween_property(c, "position:y", 0.35, 0.12)\
+				.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+		await sw.finished
+	# 3. 牌依次滑入牌盒
+	var in_tw := create_tween()
+	for i in 13:
+		var c := cards[i]
+		in_tw.tween_property(c, "position", box.position + Vector3(0, i * 0.02, 0), 0.1)\
+			.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
+	await in_tw.finished
+	# 4. 摄像机逐渐贴近牌盒
+	var cam_end := box.global_position + Vector3(0, 1.0, 2.1)
+	var cam_tw := create_tween()
+	cam_tw.tween_property(_camera, "position", cam_end, 1.2)\
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	await cam_tw.finished
+	_camera.look_at(box.global_position, Vector3.UP)
+	# 5. 闪屏正式开始游戏
+	_camera_shake_burst(0.35)
+	var flash := ColorRect.new()
+	flash.color = Color(1, 0, 0, 0)
+	flash.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	flash.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_root.add_child(flash)
+	var ftw := create_tween()
+	ftw.tween_property(flash, "color:a", 1.0, 0.05)
+	ftw.tween_property(flash, "color:a", 0.0, 0.4)
+	# 移除洗牌用的 13 张牌（牌盒保留作装饰；正式开局重新发牌）
+	for c in cards:
+		c.queue_free()
+	await get_tree().create_timer(0.5).timeout
+	flash.queue_free()
+
+
+## 牌盒故障冒烟：从牌盒顶部持续冒灰烟
+func _spawn_cardbox_smoke(pos: Vector3) -> void:
+	var pmat := ParticleProcessMaterial.new()
+	pmat.direction = Vector3(0, 1, 0)
+	pmat.spread = 22.0
+	pmat.initial_velocity_min = 0.3
+	pmat.initial_velocity_max = 0.9
+	pmat.scale_min = 0.25
+	pmat.scale_max = 0.55
+	pmat.color = Color(0.5, 0.5, 0.5, 0.4)
+	pmat.gravity = Vector3(0, 0.6, 0)
+	var particles := GPUParticles3D.new()
+	particles.emitting = true
+	particles.amount = 24
+	particles.lifetime = 2.2
+	particles.process_material = pmat
+	particles.position = pos + Vector3(0, 0.45, 0)
+	add_child(particles)
+
+
+## 掀桌时牌盒摇晃：左右快速摆动后歪掉（不消失），下一局复位
+func _shake_card_box() -> void:
+	if _card_box == null:
+		return
+	var base_z := _card_box.rotation_degrees.z
 	var tw := create_tween()
-	tw.set_parallel(true)
-	tw.tween_property(card, "position", Vector3(0, 1.1, 0.4), 0.7)\
-		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
-	tw.tween_property(card, "scale", Vector3.ONE, 0.7)\
+	for i in 5:
+		tw.tween_property(_card_box, "rotation_degrees:z", base_z + 18.0, 0.06)\
+			.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
+		tw.tween_property(_card_box, "rotation_degrees:z", base_z - 18.0, 0.06)\
+			.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
+	tw.tween_property(_card_box, "rotation_degrees:z", base_z + 24.0, 0.16)\
 		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	tw.tween_property(card, "rotation_degrees:y", 720.0, 0.7)\
-		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
-	await tw.finished
-	# 亮牌
-	card.reveal()
-	await get_tree().create_timer(0.9).timeout
-	# 预告牌退场
-	var tw2 := create_tween()
-	tw2.set_parallel(true)
-	tw2.tween_property(card, "position:y", 3.2, 0.4)\
-		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
-	tw2.tween_property(card, "scale", Vector3(0.05, 0.05, 0.05), 0.4)
-	tw2.tween_property(card, "rotation_degrees:y", 720.0, 0.4)
-	await tw2.finished
-	card.queue_free()
 
 
 func _start_match() -> void:
@@ -929,6 +1062,8 @@ func _start_match() -> void:
 func _start_round() -> void:
 	_ai_timer.stop()
 	_busy = false
+	if _card_box != null:
+		_card_box.rotation_degrees = Vector3.ZERO   # 掀桌歪掉的牌盒复位
 	round_ingredient = Ingredient.NONE
 	if randf() < SPECIAL_DAY_CHANCE:
 		round_ingredient = Ingredient.EXPIRED if randf() < 0.5 else Ingredient.REFINED
@@ -1011,6 +1146,7 @@ func _spawn_deal(slot: CardSlot3D, value: int) -> void:
 	card.rotation_degrees.x = 180.0
 	CardAnimator3D.play_deal(card, slot, value)
 	await CardAnimator3D.deal_finished
+	_play_drop_sound()
 
 
 ## 开局选标记牌：国王钦定本局料种后，双方各自暗选一张牌
@@ -1084,7 +1220,7 @@ func _show_mode_select_flow() -> void:
 	_show_mode_bar()
 
 
-## 西红柿方块：从远处抛物逼近 → 砸中屏幕（闪红+震屏）→ 下降退场
+## 西红柿方块：从远处抛物逼近 → 糊脸砸中（爆红+汁液四溅+汁液遮罩+震屏）→ 下降退场
 func _play_tomato_splash() -> void:
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color(0.85, 0.12, 0.1)
@@ -1099,32 +1235,90 @@ func _play_tomato_splash() -> void:
 	mesh.position = Vector3(0, 7.0, -7.0)
 	mesh.scale = Vector3(0.15, 0.15, 0.15)
 	add_child(mesh)
+	# 爆红遮罩（砸中瞬间全屏红）
 	var flash := ColorRect.new()
 	flash.color = Color(1, 0, 0, 0)
 	flash.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	flash.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_root.add_child(flash)
-	# 从远处(场景深处)抛物砸向屏幕，同时放大
+	# 从远处抛物砸向屏幕，同时放大
 	var tw := create_tween()
 	tw.tween_property(mesh, "position", Vector3(0, 2.8, 0.5), 0.55)\
 		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 	tw.parallel().tween_property(mesh, "scale", Vector3(2.6, 2.6, 2.6), 0.55)\
 		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 	await tw.finished
-	# 砸中屏幕：同时全屏变红 + 震屏
-	_camera_shake_burst(0.5)
+	# ---- 糊脸砸中：爆红 + 汁液四溅 + 汁液遮罩 + 震屏 + 碎裂 ----
+	_camera_shake_burst(0.55)
+	_spawn_juice_burst()
+	_spawn_tomato_shatter()   # 干瘪番茄在闪屏时碎成小块
+	mesh.visible = false
 	var ftw := create_tween()
-	ftw.tween_property(flash, "color:a", 1.0, 0.06)
-	ftw.tween_property(flash, "color:a", 0.0, 0.5)
-	# 下降退场
-	var dtw := create_tween()
-	dtw.tween_property(mesh, "position:y", -2.0, 0.4)\
-		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
-	dtw.parallel().tween_property(mesh, "scale", Vector3(0.4, 0.4, 0.4), 0.4)
-	await dtw.finished
+	ftw.tween_property(flash, "color:a", 1.0, 0.05)
+	ftw.tween_property(flash, "color:a", 0.0, 0.4)
+	# 红色汁液糊上屏幕（半透明红，随后淡出）
+	var splash := ColorRect.new()
+	splash.color = Color(0.9, 0.04, 0.03, 0.85)
+	splash.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	splash.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_root.add_child(splash)
+	var stw := create_tween()
+	stw.tween_property(splash, "color:a", 0.0, 0.7)
 	mesh.queue_free()
-	await get_tree().create_timer(0.15).timeout
+	await get_tree().create_timer(0.6).timeout
 	flash.queue_free()
+	splash.queue_free()
+
+
+## 西红柿砸中：红色汁液粒子四溅
+func _spawn_juice_burst() -> void:
+	var pmat := ParticleProcessMaterial.new()
+	pmat.direction = Vector3(0, 1, 0)
+	pmat.spread = 180.0
+	pmat.initial_velocity_min = 2.0
+	pmat.initial_velocity_max = 5.0
+	pmat.scale_min = 0.12
+	pmat.scale_max = 0.3
+	pmat.gravity = Vector3(0, -7, 0)
+	pmat.color = Color(0.85, 0.08, 0.06)
+	var particles := GPUParticles3D.new()
+	particles.one_shot = true
+	particles.amount = 60
+	particles.lifetime = 0.7
+	particles.process_material = pmat
+	particles.position = Vector3(0, 0.5, 1.2)
+	add_child(particles)
+	particles.emitting = true
+	await get_tree().create_timer(1.0).timeout
+	particles.queue_free()
+
+
+## 干瘪番茄在闪屏时碎成小块：多个红色碎片从镜头中央四散飞出消失
+func _spawn_tomato_shatter() -> void:
+	var center := Vector3(0.3, 2.5, 2.0)  # 摄像机(home)正前方镜头中央
+	for i in 14:
+		var frag_mat := StandardMaterial3D.new()
+		frag_mat.albedo_color = Color(0.85, 0.1, 0.08)
+		frag_mat.emission_enabled = true
+		frag_mat.emission = Color(0.9, 0.15, 0.1)
+		var bm := BoxMesh.new()
+		bm.size = Vector3(0.35, 0.35, 0.35) * randf_range(0.7, 1.3)
+		var frag := MeshInstance3D.new()
+		frag.mesh = bm
+		frag.material_override = frag_mat
+		frag.position = center + Vector3(randf_range(-0.3, 0.3), randf_range(-0.3, 0.3), 0)
+		add_child(frag)
+		var dir := Vector3(randf_range(-1, 1), randf_range(-0.8, 1), randf_range(-1, 1)).normalized()
+		var tw := create_tween()
+		tw.set_parallel(true)
+		tw.tween_property(frag, "position", frag.position + dir * randf_range(1.8, 3.2), 0.7)\
+			.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+		tw.tween_property(frag, "rotation_degrees", Vector3(randf_range(-360, 360), randf_range(-360, 360), randf_range(-360, 360)), 0.7)
+		tw.tween_property(frag, "scale", Vector3(1.3, 1.3, 1.3), 0.15)\
+			.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+		tw.tween_property(frag, "scale", Vector3.ZERO, 0.55)\
+			.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+		tw.tween_callback(frag.queue_free)
 
 
 ## 短促相机震动
@@ -1158,8 +1352,14 @@ func _show_mode_bar() -> void:
 	if _mode_bar == null:
 		_start_match()
 		return
+	# 进入模式选择前隐藏 VN 对话面板与教程按钮
+	if _vn_panel != null:
+		_vn_panel.visible = false
+	if _tut_next != null:
+		_tut_next.visible = false
+	if _vn_button != null:
+		_vn_button.visible = false
 	_mode_bar.visible = true
-	_vn_button.visible = false
 
 
 func _hide_mode_bar() -> void:
@@ -1255,7 +1455,7 @@ func _on_draw() -> void:
 	if _blind_mode:
 		show_vn("你", "请看这张牌。保留还是跳过？")
 	else:
-		show_vn("你", "你抽到 %d。保留（计入总分）还是跳过（弃牌·占用一格）？" % v)
+		show_vn("你", "你抽到 %d。保留还是弃牌跳过？" % v)
 
 
 ## 玩家：保留（计入总分）
@@ -1268,7 +1468,7 @@ func _on_keep() -> void:
 		_card_place_down(_pending_slot.card3d)
 	_update_scores()
 	if player_points > BUST_LIMIT:
-		_speak_scene("你", "你保留 %d，总分 %d —— 你超过 21 了！别急着认输，看对方会不会也爆。" % [_pending_value, player_points])
+		_speak_scene("你", "你保留 %d，总分 %d 神了……" % [_pending_value, player_points])
 		await get_tree().create_timer(0.8).timeout
 	_start_ai_turn()
 
@@ -1280,7 +1480,10 @@ func _on_skip() -> void:
 	_pending_slot.set_skipped(true)
 	if _pending_slot.card3d != null:
 		_set_discarded(_pending_slot.card3d)
-	_speak_scene("你", "你弃置了一张牌（%d 不计入，占用 1 格）。" % _pending_value)
+		# 特殊日弃牌同样显示料标记（与保留牌统一设计）
+		if round_ingredient != Ingredient.NONE:
+			_add_pin_marker(_pending_slot.card3d)
+	_speak_scene("你", "弃置了一张%d 。" % _pending_value)
 	await get_tree().create_timer(0.6).timeout
 	_start_ai_turn()
 
@@ -1309,10 +1512,12 @@ func _on_ai_turn_timeout() -> void:
 	if decision == "stand":
 		_speak_scene("红队", "%s（开牌）" % _rand_taunt())
 		await get_tree().create_timer(0.4).timeout
+		_bell.ring()
 		_resolve()
 		return
 	if _slots_full(_ai_slots) or card_pool.is_empty():
 		await get_tree().create_timer(0.3).timeout
+		_bell.ring()
 		_resolve()
 		return
 	var v := _draw_from_pool()
@@ -1328,14 +1533,14 @@ func _on_ai_turn_timeout() -> void:
 			slot.card3d.reveal()
 		_update_scores()
 		if ai_points > BUST_LIMIT:
-			_speak_scene("红队", "红队抽到 +%d，总分 %d —— 它超过 21 了！看你能不能抓住机会。" % [v, ai_points])
+			_speak_scene("红队", "红队抽到 +%d，总分 %d 对方想跟你爆了！" % [v, ai_points])
 			await get_tree().create_timer(0.8).timeout
 		_start_player_turn()
 	else:
 		slot.set_skipped(true)
 		if slot.card3d != null:
 			_set_discarded(slot.card3d)
-		_speak_scene("红队", "红队弃置了一张牌（+%d 不计入）。" % v)
+		_speak_scene("红队", "弃置了一张 %d 。" % v)
 		await get_tree().create_timer(0.6).timeout
 		_start_player_turn()
 
@@ -1382,8 +1587,7 @@ func _update_buttons() -> void:
 		_keep_btn.set_enabled(false)
 		_skip_btn.visible = false
 		_skip_btn.set_enabled(false)
-		_bell.visible = false
-		_bell.set_enabled(false)
+		# 铃铛：教程中保持可见（step0 引导开牌，与原来一致）
 		return
 	var player_turn := state == State.PLAYER_TURN
 	var deciding := player_turn and phase == Phase.DECIDE
@@ -1447,11 +1651,11 @@ func _resolve() -> void:
 	var portrait := "国王"
 	if result == "player":
 		if p_bust and a_bust:
-			msg = "双方都爆牌了！你（%d 点）比红队（%d 点）更接近 21，算你赢！" % [player_points, ai_points]
+			msg = "爆牌了！你（%d 点）比红队（%d 点）更接近 21，算你赢！" % [player_points, ai_points]
 		elif a_bust:
 			msg = "红队爆牌了（%d 点，超过 21）！你以 %d 点获胜，你过关！" % [ai_points, player_points]
 		else:
-			msg = "你以 %d 点博得国王欢心！对方（%d 点）被扔进汤锅。赢！" % [player_points, ai_points]
+			msg = "你以 %d 点博得国王欢心！（%d 点）被扔进汤锅。赢了！" % [player_points, ai_points]
 		portrait = "你"
 	elif result == "ai":
 		if p_bust and a_bust:
@@ -1465,7 +1669,7 @@ func _resolve() -> void:
 		if p_bust and a_bust:
 			msg = "双方爆牌且同分（%d 点），国王摇头说，这锅坏菜了。" % player_points
 		else:
-			msg = "双方均未达标，简直拉完了，国王表示菜就多练。（你 %d / 红队 %d）" % [player_points, ai_points]
+			msg = "哎呀，简直拉完了，国王表示菜就多练。（你 %d / 红队 %d）" % [player_points, ai_points]
 		portrait = "国王"
 
 	# ---- 过期料/精制料：被计入哪一方的手就影响哪一方 ----
@@ -1521,7 +1725,7 @@ func _resolve() -> void:
 		_consecutive_draws = 0
 		player_lives = maxi(0, player_lives - 1)
 		ai_lives = maxi(0, ai_lives - 1)
-		msg += "\n连续平局让国王震怒——他掀了桌子！。"
+		msg += "\n连续平局让国王震怒——OMG！他掀了桌子！。"
 		if player_lives <= 0:
 			match_over = true
 			msg += "\n你的电量尽失，红队赢下整场盛宴！"
@@ -1562,6 +1766,7 @@ func _resolve() -> void:
 	# 掀桌子演出（达阈值时）
 	if flip_table:
 		_vn_button.disabled = true
+		_shake_card_box()   # 掀桌时牌盒摇晃歪掉
 		await _play_table_flip()
 		_vn_button.disabled = false
 
@@ -1613,9 +1818,9 @@ func _show_scene_banner(text: String) -> void:
 	lab.text = text
 	lab.font_size = 46
 	lab.pixel_size = 0.0022
-	lab.modulate = Color(1, 0.92, 0.55)
-	lab.outline_size = 10
-	lab.outline_modulate = Color(0, 0, 0, 0.9)
+	lab.modulate = Color(1, 0.96, 0.78)
+	lab.outline_size = 5
+	lab.outline_modulate = Color(0, 0, 0, 0.7)
 	lab.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	lab.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	lab.position = Vector3(0.5, 1.6, 1.4)
@@ -1629,7 +1834,8 @@ func _show_scene_banner(text: String) -> void:
 	_banner_tw.chain().tween_callback(func() -> void:
 		_banner_tw = null
 		if _banner_label == lab:
-			_banner_label = null)
+			_banner_label = null
+		lab.queue_free())
 
 
 # ============================================================
@@ -1678,7 +1884,7 @@ func _apply_ingredient_life(side: int) -> void:
 
 func _ing_hit_desc(side: int, mv: int) -> String:
 	var who := "你" if side == Side.PLAYER else "红队"
-	var act := "在怀旧节被陈年料缠上，电量 -1" if round_ingredient == Ingredient.EXPIRED else "在新鲜日尝到鲜料，电量 +1"
+	var act := "在怀旧节被陈年料缠上，电量减少" if round_ingredient == Ingredient.EXPIRED else "在新鲜日尝到鲜料，充电成功"
 	return "%s %s（牌 %d）" % [who, act, mv]
 
 
