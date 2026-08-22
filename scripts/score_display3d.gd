@@ -10,6 +10,7 @@ var _grayed := false  # 盲选模式：数字置暗灰，不按分数变色
 
 var _number: Label3D
 var _flash_tw: Tween = null
+var _flicker_tw: Tween = null
 var _cells: Array[StandardMaterial3D] = []
 var _all_mats: Array[StandardMaterial3D] = []
 
@@ -22,7 +23,7 @@ func _build() -> void:
 	# 面板（竖立，面朝 +Z）
 	var panel := MeshInstance3D.new()
 	var b := BoxMesh.new()
-	b.size = Vector3(0.7, 0.95, 0.03)
+	b.size = Vector3(0.7, 0.8, 0.03)
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = Color(0.02, 0.02, 0.03, 0.92)
 	mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
@@ -30,7 +31,7 @@ func _build() -> void:
 	mat.emission = Color(0.04, 0.04, 0.06)
 	panel.mesh = b
 	panel.material_override = mat
-	panel.position = Vector3(0, 0.475, 0)
+	panel.position = Vector3(0, 0.4, 0)
 	add_child(panel)
 	_all_mats.append(mat)
 
@@ -41,21 +42,21 @@ func _build() -> void:
 	_number.font_size = 128
 	_number.pixel_size = 0.0016
 	_number.modulate = Color(0.95, 0.95, 0.95)
-	_number.position = Vector3(0, 0.68, 0.017)
+	_number.position = Vector3(0, 0.55, 0.017)
 	add_child(_number)
 
 	# 电量格 4 个（面朝 +Z，排成一排）
 	for i in 4:
 		var cell := MeshInstance3D.new()
 		var cb := BoxMesh.new()
-		cb.size = Vector3(0.13, 0.26, 0.02)
+		cb.size = Vector3(0.13, 0.2, 0.02)
 		var cm := StandardMaterial3D.new()
 		cm.emission_enabled = true
 		cm.emission = Color(0.12, 0.12, 0.12)
 		cm.albedo_color = Color(0.12, 0.12, 0.12)
 		cell.mesh = cb
 		cell.material_override = cm
-		cell.position = Vector3((i - 1.5) * 0.16, 0.3, 0.018)
+		cell.position = Vector3((i - 1.5) * 0.16, 0.22, 0.018)
 		add_child(cell)
 		_cells.append(cm)
 		_all_mats.append(cm)
@@ -99,6 +100,11 @@ func set_lives(l: int) -> void:
 		var c := tier if on else Color(0.12, 0.12, 0.12)
 		_cells[i].emission = c
 		_cells[i].albedo_color = c
+	# 剩 1 颗：间歇闪烁（像要坏掉），其余时候恢复稳定
+	if l == 1:
+		_start_flicker()
+	else:
+		_stop_flicker()
 
 
 func _tier_color(l: int) -> Color:
@@ -134,4 +140,31 @@ func _stop_flash() -> void:
 	if _flash_tw != null:
 		_flash_tw.kill()
 		_flash_tw = null
+
+
+## 剩 1 颗电：点亮的电池格间歇闪烁（快速闪两下 → 停一拍 → 再闪），营造"要坏掉"的感觉
+func _start_flicker() -> void:
+	_stop_flicker()
+	if lives != 1 or _cells.is_empty():
+		return
+	var on := Color(1.0, 0.25, 0.2)   # 剩 1 颗的红色
+	var off := Color(0.28, 0.07, 0.06)
+	_flicker_tw = create_tween().set_loops()
+	for i in 2:
+		_flicker_tw.tween_property(_cells[0], "emission", off, 0.1)
+		_flicker_tw.tween_property(_cells[0], "emission", on, 0.1)
+	_flicker_tw.tween_interval(0.8)  # 停一拍，形成间歇而非一直闪
+
+
+func _stop_flicker() -> void:
+	if _flicker_tw != null:
+		_flicker_tw.kill()
+		_flicker_tw = null
+
+
+## 输牌/倒下时隐藏记牌器数字（复位后恢复显示）
+func set_number_visible(v: bool) -> void:
+	if _number == null:
+		return
+	_number.visible = v
 

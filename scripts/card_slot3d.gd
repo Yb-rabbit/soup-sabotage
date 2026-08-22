@@ -6,6 +6,7 @@ extends Node3D
 var card3d: Card3D = null
 var occupied := false
 var skipped := false
+var kept := false
 var glow_color := Color(0.3, 0.9, 0.3)
 
 var _plate_mat: StandardMaterial3D
@@ -49,7 +50,13 @@ func set_occupied(c: Card3D) -> void:
 	card3d = c
 	occupied = true
 	skipped = false
+	kept = false
 	_highlight(glow_color)
+
+
+## 标记该槽为"已确认保留/计入"（区别于刚抽到、尚未决定保留/跳过的牌）
+func set_kept(k: bool) -> void:
+	kept = k
 
 
 ## 标记该槽为"跳过/弃牌"（占槽但不计分）
@@ -72,6 +79,7 @@ func reset() -> void:
 		card3d = null
 	occupied = false
 	skipped = false
+	kept = false
 	_skip_label.visible = false
 	_plate_mat.emission_enabled = false
 	_plate_mat.albedo_color = Color(0.04, 0.04, 0.05, 0.8)

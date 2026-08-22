@@ -8,13 +8,14 @@ signal deal_finished(slot: CardSlot3D)
 var _busy := false
 
 
-func play_deal(card: Card3D, target: CardSlot3D, value: int) -> void:
+func play_deal(card: Card3D, target: CardSlot3D, value: int, yaw_final := 0.0) -> void:
 	if _busy or card == null or target == null:
 		return
 	_busy = true
 
 	var to := target.position + Vector3(0, 0.02, 0)
 	card.rotation_degrees.x = 180.0  # 初始牌背朝上
+	card.rotation_degrees.y = yaw_final  # 对坐：玩家牌朝玩家(+z)，对面牌朝对面(-z)
 
 	var tw := create_tween()
 	tw.set_parallel(true)
@@ -28,8 +29,8 @@ func play_deal(card: Card3D, target: CardSlot3D, value: int) -> void:
 		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	tw.tween_property(card, "position:y", to.y, 0.25)\
 		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN).set_delay(0.25)
-	# 3. 自旋：绕 Y 轴转 720°（卡保持水平原地转圈，不扫穿桌面，落地仍牌背朝上）
-	tw.tween_property(card, "rotation_degrees:y", 720.0, 0.5)\
+	# 3. 自旋：绕 Y 轴转 720°+朝向偏移（整圈保持水平转圈，落地牌背朝上且朝向目标）
+	tw.tween_property(card, "rotation_degrees:y", 720.0 + yaw_final, 0.5)\
 		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
 
 	tw.finished.connect(_finish_deal.bind(card, target, value))
