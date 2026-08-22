@@ -8,6 +8,7 @@ const BUST_LIMIT := 21
 const KING_MIN := 18
 const MAX_CARDS := 5
 const START_LIVES := 4
+const CAN_PER_MATCH := 1  # 每场最多端上来的罐头次数（改成 >1 即可复用）
 const AI_THINK_MAX := 6.0
 const SPECIAL_DAY_CHANCE := 0.4  # 出现特殊日（怀旧节/新鲜日）的概率；其余为普通日
 const DRAW_PENALTY_AT := 3  # 连续平局达此阈值触发“国王掀桌子”（双方各扣 1 命）
@@ -77,6 +78,19 @@ var _pending_slot: CardSlot3D = null
 var _ai_timer: Timer
 var _busy := false  # 发牌动画输入锁
 var _consecutive_draws := 0  # 连续平局计数（达阈值触发掀桌子）
+
+# ---- 神秘罐头：赢下关键一局时的赌命道具（每场一次）----
+var _can_remaining := CAN_PER_MATCH   # 本场还可端上来的罐头次数
+var _can_bar: HBoxContainer     # 罐头抉择条（上菜/开罐）
+var _can_buttons: Array[Button] = []
+var _can_3d: Node3D = null      # 桌中央罐头模型
+var _spent_can: Node3D = null    # 上菜弃置在牌盒对面桌角的空罐（本场痕迹）
+var _can_lid: MeshInstance3D = null  # 罐头盖（开罐时炸飞）
+var _can_au: AudioStreamPlayer  # 罐头音效播放器
+var _soup_overlay: ColorRect    # 金汤/黑泥全屏溅遮罩
+signal _can_decided             # 罐头抉择完成
+var _can_pick := -1             # -1=待定 0=上菜 1=开罐
+var _can_gold := false          # 开罐是否金汤（成功）
 
 # ---- 过期料/精制料 ----
 var round_ingredient := Ingredient.EXPIRED  # 本局料种（每局重置）
@@ -171,6 +185,9 @@ func _setup_drop_sound() -> void:
 	_drop_player = AudioStreamPlayer.new()
 	_drop_player.volume_db = 3.0
 	add_child(_drop_player)
+	_can_au = AudioStreamPlayer.new()
+	_can_au.volume_db = 1.5
+	add_child(_can_au)
 
 
 ## 播放落牌音（阻尼正弦低频"咚"）
@@ -719,6 +736,41 @@ func _build_ui() -> void:
 	_block_label.visible = false
 	_root.add_child(_block_label)
 
+	# ---- 神秘罐头抉择条（赢下关键一局时出现，默认隐藏）----
+	_can_bar = HBoxContainer.new()
+	_can_bar.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
+	_can_bar.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_can_bar.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_can_bar.offset_left = -360
+	_can_bar.offset_top = -100
+	_can_bar.offset_right = 360
+	_can_bar.offset_bottom = -24
+	_can_bar.add_theme_constant_override("separation", 16)
+	_can_bar.visible = false
+	_root.add_child(_can_bar)
+	var b_serve := Button.new()
+	b_serve.text = "上菜（安稳收下这局）"
+	b_serve.custom_minimum_size = Vector2(230, 50)
+	b_serve.add_theme_font_size_override("font_size", 18)
+	b_serve.pressed.connect(_on_can_pick.bind(0))
+	_can_bar.add_child(b_serve)
+	_can_buttons.append(b_serve)
+	var b_open := Button.new()
+	b_open.text = "开罐（赌命）"
+	b_open.custom_minimum_size = Vector2(200, 50)
+	b_open.add_theme_font_size_override("font_size", 18)
+	b_open.pressed.connect(_on_can_pick.bind(1))
+	_can_bar.add_child(b_open)
+	_can_buttons.append(b_open)
+
+	# 金汤/黑泥全屏溅遮罩（模拟"汤汁溅了一脸"）
+	_soup_overlay = ColorRect.new()
+	_soup_overlay.color = Color(0, 0, 0, 0)
+	_soup_overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_soup_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_soup_overlay.visible = false
+	_root.add_child(_soup_overlay)
+
 	# ---- 进入过渡：黑屏遮罩（代替原内置“开始”菜单，消除二重验证）----
 	_menu = ColorRect.new()
 	_menu.color = Color(0, 0, 0, 1)
@@ -1109,12 +1161,25 @@ func _shake_card_box() -> void:
 		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 
 
+## 掀桌时若有弃置空罐：沉到桌面以下后清理（被掀桌卷走，避免残留）
+func _sink_spent_can() -> void:
+	if _spent_can == null:
+		return
+	var can := _spent_can
+	_spent_can = null
+	var tw := can.create_tween()
+	tw.tween_property(can, "global_position:y", -0.6, 0.4).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tw.chain().tween_callback(func() -> void: can.queue_free())
+
+
 func _start_match() -> void:
 	_tut_kill_demo()
 	_tut_clear_highlight()
 	player_lives = START_LIVES
 	ai_lives = START_LIVES
 	_consecutive_draws = 0
+	_can_remaining = CAN_PER_MATCH
+	_clear_spent_can()
 	_update_lives()
 	await _play_match_intro()
 	_start_round()
@@ -1855,9 +1920,35 @@ func _resolve() -> void:
 		var ra := "红队：参与（料 %d）" % ai_mark_value if ai_mark_value != 0 else "红队：不参与（和平交易）"
 		msg += "\n%s　%s" % [rp, ra]
 
+	# 盲选：开牌时才翻开双方保留牌、显示完整总分（放在扣命/罐头之前，让玩家先看到结果再抉择）
+	if _blind_mode:
+		await _reveal_all_kept()
+		_player_phone.set_points(player_points)
+		_ai_phone.set_points(ai_points)
+		_player_phone.set_grayed(false)
+		_ai_phone.set_grayed(false)
+
 	# 电量格：本局失败方扣 1 格（平局双方都不扣）
+	# 玩家赢下关键一局（即将获胜/血量劣势）且本场未用时，触发神秘罐头赌命
 	var match_over := false
-	if result == "player":
+	if result == "player" and _can_remaining > 0 and _can_should_trigger():
+		_can_remaining -= 1
+		var can_result: int = await _can_gamble_flow()  # 0=上菜 1=金汤 2=黑泥
+		if can_result == 1:
+			ai_lives = maxi(0, ai_lives - 2)
+			_focus_on_life(Side.AI)
+			msg += "\n神秘罐头喷出【金汤】！红队电量 -2（剩余 %d）。" % ai_lives
+		elif can_result == 2:
+			ai_lives = maxi(0, ai_lives - 1)
+			player_lives = maxi(0, player_lives - 1)
+			_focus_on_life(Side.PLAYER)
+			msg += "\n罐头炸出【黑泥】——你也成了这锅汤的料！你 -1（剩余 %d），红队 -1。" % player_lives
+		else:
+			_can_remaining += 1   # 上菜退还机会：下次关键时刻还能再端
+			ai_lives = maxi(0, ai_lives - 1)
+			_focus_on_life(Side.AI)
+			msg += "\n你把罐头搁到一边，红队电量 -1（剩余 %d）。" % ai_lives
+	elif result == "player":
 		ai_lives = maxi(0, ai_lives - 1)
 		_focus_on_life(Side.AI)
 		msg += "\n红队电量 -1（剩余 %d）。" % ai_lives
@@ -1893,14 +1984,6 @@ func _resolve() -> void:
 			msg += "\n红队电量尽失，你赢下整场盛宴！"
 	_update_lives()
 
-	# 盲选：开牌时才翻开双方保留牌、显示完整总分
-	if _blind_mode:
-		await _reveal_all_kept()
-		_player_phone.set_points(player_points)
-		_ai_phone.set_points(ai_points)
-		_player_phone.set_grayed(false)
-		_ai_phone.set_grayed(false)
-
 	_vn_button.text = "重来" if match_over else "下一局"
 	show_vn(portrait, msg)
 
@@ -1921,6 +2004,326 @@ func _resolve() -> void:
 		_shake_card_box()   # 掀桌时牌盒摇晃歪掉
 		await _play_table_flip()
 		_vn_button.disabled = false
+
+
+## 是否触发神秘罐头：玩家赢下关键一局，且处于即将获胜或血量劣势（重叠按最危险的残血=终极裁决）
+func _can_should_trigger() -> bool:
+	# 即将获胜：红队只剩 1 命；血量劣势：我方血量低于红队
+	return player_lives < ai_lives or ai_lives <= 1
+
+
+## 罐头抉择流程：返回 0=上菜 1=金汤 2=黑泥
+func _can_gamble_flow() -> int:
+	_can_pick = -1
+	_can_gold = false
+	if _vn_button != null:
+		_vn_button.visible = false
+	show_vn("国王", "这口罐头，是赏给你的赌注。敢开吗？")
+	_spawn_can_3d()          # 国王端上来：托盘从桌边滑到桌中央 + 发光激活
+	await get_tree().create_timer(0.9).timeout  # 等罐头端到位
+	_can_bar.visible = true
+	await _can_decided
+	_can_bar.visible = false
+	if _can_pick == 0:
+		_can_discard()   # 上菜：罐头滑到牌盒对面桌角，留作空罐（不消失）
+		return 0
+	# 开罐：先摇晃（形变+危险音效），再 50/50 判定
+	_can_shake_fx()
+	await get_tree().create_timer(1.3).timeout
+	_can_gold = randf() < 0.5
+	if _can_gold:
+		_can_lid_flyoff()
+		_play_can_sound("pop")
+		_spawn_soup_particles(Color(1.0, 0.82, 0.3), Vector3(0.3, 1.15, 1.0), Vector3(0, 0, -1), 50.0)
+		_soup_overlay_flash(Color(1.0, 0.85, 0.35, 0.4))
+		_soup_splash_2d(Color(1.0, 0.85, 0.35))
+		_camera_shake_burst(0.18)
+		await get_tree().create_timer(0.3).timeout
+		_cleanup_can()
+		return 1
+	else:
+		_can_lid_flyoff()
+		_play_can_sound("explode")
+		_spawn_soup_particles(Color(0.08, 0.08, 0.08), Vector3(0.3, 1.0, 1.2), Vector3(0, 0, 1), 85.0)
+		_soup_overlay_flash(Color(0.05, 0.05, 0.05, 0.55))
+		_soup_splash_2d(Color(0.06, 0.06, 0.06))
+		_camera_shake_burst(0.4)
+		await get_tree().create_timer(0.35).timeout
+		_cleanup_can()
+		return 2
+
+
+## 桌中央掉落一个生锈的恐怖罐头（3D）
+func _spawn_can_3d() -> void:
+	_clear_spent_can()   # 再端新罐前清掉上一个弃置空罐，桌面只留最近一个
+	_can_lid = null
+	_can_3d = Node3D.new()
+	_can_3d.position = Vector3(0.3, 0.75, 2.3)   # 从桌边（国王端来的一侧）登场
+	# 托盘底座（托住罐头，随罐头一起端上来）
+	var tray := MeshInstance3D.new()
+	var tray_m := CylinderMesh.new()
+	tray_m.top_radius = 0.5
+	tray_m.bottom_radius = 0.5
+	tray_m.height = 0.04
+	var tray_mat := StandardMaterial3D.new()
+	tray_mat.albedo_color = Color(0.32, 0.27, 0.23)
+	tray_mat.metallic = 0.75
+	tray_mat.roughness = 0.5
+	tray.mesh = tray_m
+	tray.material_override = tray_mat
+	tray.rotation_degrees.x = 90.0
+	tray.position = Vector3(0, -0.26, 0)
+	_can_3d.add_child(tray)
+	# 罐身（锈色，到位后发光激活）
+	var body := MeshInstance3D.new()
+	var cyl := CylinderMesh.new()
+	cyl.top_radius = 0.3
+	cyl.bottom_radius = 0.28
+	cyl.height = 0.62
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = Color(0.38, 0.30, 0.24)
+	mat.roughness = 0.85
+	mat.metallic = 0.6
+	mat.emission_enabled = true
+	mat.emission = Color(0, 0, 0)
+	body.mesh = cyl
+	body.material_override = mat
+	body.rotation_degrees.x = 90.0
+	_can_3d.add_child(body)
+	# 盖子
+	var lid := MeshInstance3D.new()
+	var disc := CylinderMesh.new()
+	disc.top_radius = 0.3
+	disc.bottom_radius = 0.3
+	disc.height = 0.06
+	var lid_mat := StandardMaterial3D.new()
+	lid_mat.albedo_color = Color(0.5, 0.42, 0.34)
+	lid_mat.roughness = 0.6
+	lid_mat.metallic = 0.8
+	lid.mesh = disc
+	lid.material_override = lid_mat
+	lid.rotation_degrees.x = 90.0
+	lid.position = Vector3(0, 0.32, 0)
+	_can_3d.add_child(lid)
+	_can_lid = lid
+	# 标签
+	var lab := Label3D.new()
+	lab.text = "？？？\n汤料"
+	lab.font_size = 34
+	lab.pixel_size = 0.0012
+	lab.modulate = Color(0.8, 0.65, 0.4)
+	lab.position = Vector3(0, 0, 0)
+	_can_3d.add_child(lab)
+	add_child(_can_3d)
+	# 端上来：从桌边平滑滑到桌中央（有铺垫、不凭空砸下），到位轻响 + 发光激活 + 脉动
+	var tw := create_tween()
+	tw.tween_property(_can_3d, "position", Vector3(0.3, 0.75, 1.2), 0.6).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
+	tw.tween_callback(func() -> void: _play_can_sound("drop"))
+	var glow := create_tween()
+	glow.set_parallel(true)
+	glow.tween_property(mat, "emission", Color(1.0, 0.5, 0.2), 0.35).set_delay(0.6)
+	var pulse := create_tween()
+	pulse.tween_property(_can_3d, "scale", Vector3(1.05, 1.08, 1.05), 0.3).set_delay(0.6)
+	pulse.tween_property(_can_3d, "scale", Vector3.ONE, 0.3)
+
+
+## 摇晃罐头：形变 + 危险液体音
+func _can_shake_fx() -> void:
+	if _can_3d == null:
+		return
+	_play_can_sound("shake")
+	var tw := create_tween()
+	for i in 5:
+		var tilt := 22.0 if i % 2 == 0 else -22.0
+		tw.tween_property(_can_3d, "rotation_degrees:z", tilt, 0.1).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
+		tw.tween_property(_can_3d, "rotation_degrees:x", 6.0 if i % 2 == 0 else -6.0, 0.1)
+		tw.tween_property(_can_3d, "scale", Vector3(1.06, 1.18, 1.06), 0.09).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
+		tw.tween_property(_can_3d, "scale", Vector3.ONE, 0.09).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
+	tw.tween_property(_can_3d, "rotation_degrees", Vector3(0, 0, 0), 0.12)
+	tw.tween_property(_can_3d, "scale", Vector3.ONE, 0.1)
+
+
+## 开罐时盖子被炸飞：离罐 + 旋转 + 落下消失
+func _can_lid_flyoff() -> void:
+	if _can_lid == null:
+		return
+	var lid := _can_lid
+	_can_lid = null
+	# 记录当前世界位置
+	var from: Vector3
+	if lid.is_inside_tree():
+		from = lid.global_position
+	else:
+		from = lid.position
+	# 把盖子从罐头 reparent 到根：脱离 _can_3d，避免 _cleanup_can 删罐头时连带释放盖子、
+	# 导致盖子仍在运行的 tween 访问已释放对象而崩溃
+	if _can_3d != null and lid.get_parent() == _can_3d:
+		_can_3d.remove_child(lid)
+	add_child(lid)
+	lid.global_position = from
+	var to := from + Vector3(randf_range(-0.7, 0.7), 1.5, randf_range(-0.4, 0.2))
+	var tw := create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(lid, "global_position", to, 0.5).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.tween_property(lid, "rotation_degrees", Vector3(randf_range(260, 480), 0, randf_range(-120, 120)), 0.5).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.chain().tween_property(lid, "global_position:y", 0.05, 0.55).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
+	tw.chain().tween_callback(func() -> void: lid.queue_free())
+
+
+## 金汤/黑泥喷溅粒子（可参数化颜色与中心）
+func _spawn_soup_particles(col: Color, center: Vector3, dir: Vector3 = Vector3(0, 1, 0), spread := 70.0) -> void:
+	var pmat := ParticleProcessMaterial.new()
+	pmat.direction = dir.normalized()
+	pmat.spread = spread
+	pmat.initial_velocity_min = 3.0
+	pmat.initial_velocity_max = 7.0
+	pmat.scale_min = 0.15
+	pmat.scale_max = 0.42
+	pmat.gravity = Vector3(0, -7, 0)
+	pmat.color = col
+	var particles := GPUParticles3D.new()
+	particles.one_shot = true
+	particles.amount = 170
+	particles.lifetime = 1.0
+	particles.process_material = pmat
+	particles.position = center
+	add_child(particles)
+	particles.emitting = true
+	get_tree().create_timer(1.2).timeout.connect(func() -> void: particles.queue_free())
+
+
+## 金汤/黑泥全屏遮罩闪现淡出（模拟汤汁溅脸、遮挡视线片刻）
+func _soup_overlay_flash(col: Color) -> void:
+	if _soup_overlay == null:
+		return
+	_soup_overlay.color = col
+	_soup_overlay.visible = true
+	var tw := _soup_overlay.create_tween()
+	tw.tween_property(_soup_overlay, "color:a", 0.0, 0.7)
+	tw.tween_callback(func() -> void: _soup_overlay.visible = false)
+
+
+## 屏幕上的汤汁飞溅液滴（模拟"溅了一脸"遮挡视线片刻）
+func _soup_splash_2d(col: Color) -> void:
+	if _root == null:
+		return
+	var center := _root.size * 0.5
+	for i in 24:
+		var blop := ColorRect.new()
+		var sz := Vector2(randf_range(40, 130), randf_range(40, 130))
+		blop.size = sz
+		blop.pivot_offset = sz * 0.5
+		blop.position = center + Vector2(randf_range(-40, 40), randf_range(-40, 40))
+		blop.color = Color(col.r, col.g, col.b, randf_range(0.35, 0.7))
+		blop.rotation = randf_range(0, TAU)
+		blop.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		blop.z_index = 100
+		_root.add_child(blop)
+		var dir := Vector2(randf_range(-1, 1), randf_range(-1, 1)).normalized()
+		var tw := blop.create_tween()
+		tw.set_parallel(true)
+		tw.tween_property(blop, "position", center + dir * randf_range(140, 480), 0.42).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+		tw.tween_property(blop, "color:a", 0.0, 0.55).set_delay(0.2)
+		tw.tween_property(blop, "rotation", blop.rotation + randf_range(-2, 2), 0.42)
+		tw.tween_callback(blop.queue_free)
+
+
+## 罐头合成音效：drop 坠桌 / shake 摇晃 / pop 开罐 / explode 爆炸
+func _play_can_sound(kind: String) -> void:
+	if _can_au == null:
+		return
+	var rate := 44100
+	var dur := 0.0
+	var freq := 0.0
+	var decay := 0.0
+	match kind:
+		"drop":
+			dur = 0.3; freq = 80.0; decay = 7.0
+		"shake":
+			dur = 0.7; freq = 165.0; decay = 5.0
+		"pop":
+			dur = 0.5; freq = 430.0; decay = 8.0
+		"explode":
+			dur = 0.9; freq = 48.0; decay = 3.5
+		_:
+			return
+	var n := int(rate * dur)
+	var data := PackedByteArray()
+	data.resize(n * 2)
+	var time := 0.0
+	var inc := 1.0 / rate
+	for i in n:
+		var v := sin(TAU * freq * time) * exp(-decay * time)
+		if kind == "shake" or kind == "explode":
+			v = v * 0.78 + randf_range(-0.12, 0.12)
+		if kind == "explode":
+			v = v * 1.05
+		var s := int(clampf(v * 32767.0, -32768.0, 32767.0))
+		data[i * 2] = s & 0xFF
+		data[i * 2 + 1] = (s >> 8) & 0xFF
+		time += inc
+	var wav := AudioStreamWAV.new()
+	wav.format = AudioStreamWAV.FORMAT_16_BITS
+	wav.mix_rate = rate
+	wav.stereo = false
+	wav.data = data
+	_can_au.stream = wav
+	_can_au.play()
+
+
+## 清理罐头节点并恢复 VN 按钮
+func _cleanup_can() -> void:
+	if _can_3d != null:
+		_can_3d.queue_free()
+		_can_3d = null
+	_can_bar.visible = false
+	if _vn_button != null:
+		_vn_button.visible = true
+
+
+## 上菜：不删罐头，把罐身滑到牌盒对面桌角，灰化倾倒留作"弃置的空罐"
+func _can_discard() -> void:
+	_can_bar.visible = false
+	if _vn_button != null:
+		_vn_button.visible = true
+	if _can_3d == null:
+		return
+	var can := _can_3d
+	_can_3d = null
+	_clear_spent_can()             # 清掉上一个空罐，桌面只留最近一个
+	_spent_can = can
+	_darken_meshes(can)            # 灰化成"用过的旧罐"
+	var target := Vector3(-2.7, 0.6, 0.5)   # 牌盒对面那半边桌子（牌盒在 x=3.0）
+	var tw := create_tween()
+	tw.set_parallel(true)
+	tw.tween_property(can, "global_position", target, 0.5).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
+	tw.tween_property(can, "rotation_degrees:z", 75.0, 0.5).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
+	tw.tween_property(can, "scale", Vector3.ONE * 0.8, 0.4)
+
+
+## 清掉弃置的空罐节点（整场重开 / 再端新罐前调用）
+func _clear_spent_can() -> void:
+	if _spent_can != null:
+		_spent_can.queue_free()
+		_spent_can = null
+
+
+## 递归把罐头相关网格材质调灰暗（模拟旧罐）
+func _darken_meshes(node: Node) -> void:
+	for child in node.get_children():
+		if child is MeshInstance3D and child.material_override is StandardMaterial3D:
+			var m: StandardMaterial3D = child.material_override
+			m.albedo_color = m.albedo_color * Color(0.55, 0.55, 0.55)
+			m.emission = Color(0, 0, 0)
+		_darken_meshes(child)
+
+
+## 罐头抉择按钮回调
+func _on_can_pick(pick: int) -> void:
+	if _can_pick != -1:
+		return
+	_can_pick = pick
+	_can_decided.emit()
 
 
 ## VN 面板按钮：教程中=跳过教程；整场结束=重来；否则下一局
@@ -2172,6 +2575,8 @@ func _play_table_flip() -> void:
 	# 桌面倾斜
 	var ttw := _table.create_tween()
 	ttw.tween_property(_table, "rotation_degrees:z", 20.0, 0.3).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	# 掀桌：弃置的空罐沉到桌下消失（被掀桌卷走）
+	_sink_spent_can()
 	# 镜头震动
 	_kill_cam_tw()
 	var shake := create_tween()
