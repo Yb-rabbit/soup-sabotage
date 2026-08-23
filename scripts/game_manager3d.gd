@@ -130,6 +130,15 @@ var _cam_home_look := Vector3(0, 0.2, -0.2)
 
 var _drop_player: AudioStreamPlayer        # 落牌音效播放器
 var _card_box: MeshInstance3D = null       # 场景牌盒装饰（掀桌时爆炸）
+# ---- 音频资源播放器 ----
+var _tut_music: AudioStreamPlayer      # 教程循环 BGM（DustSalt）
+var _shuffle_au: AudioStreamPlayer     # 洗牌“簌簌”音（DustSalt）
+var _error_au: AudioStreamPlayer       # 回合结算 ErrorTimes 音效
+var _bgm: AudioStreamPlayer            # 关卡循环 BGM（After21th）
+var _splat_au: AudioStreamPlayer       # 番茄糊脸"啪叽"湿响（Wash_PK）
+var _settle_music: AudioStreamPlayer   # 结算阶段循环 BGM（Hidden21th）
+var _vine_boom: AudioStreamPlayer      # 翻桌/洗牌完毕 boom（bithuh-vine-boom）
+var _result_cam_tw: Tween = null       # 结算观看阶段镜头摆动 tween
 
 
 func _ready() -> void:
@@ -203,9 +212,56 @@ func _setup_drop_sound() -> void:
 	_can_au = AudioStreamPlayer.new()
 	_can_au.volume_db = 1.5
 	add_child(_can_au)
+	# ---- 新增音频：教程循环 DustSalt / 洗牌簌簌 / 回合结算 ErrorTimes / 结算阶段 After21th ----
+	_tut_music = AudioStreamPlayer.new()
+	_tut_music.stream = load("res://DustSalt.ogg")
+	_tut_music.volume_db = -6.0
+	_tut_music.finished.connect(_on_tut_music_finished)
+	add_child(_tut_music)
+	_shuffle_au = AudioStreamPlayer.new()
+	_shuffle_au.stream = load("res://Wash_PK.ogg")
+	_shuffle_au.volume_db = -4.0
+	add_child(_shuffle_au)
+	_error_au = AudioStreamPlayer.new()
+	_error_au.stream = load("res://ErrorTimes.mp3")
+	_error_au.volume_db = 0.0
+	add_child(_error_au)
+	_bgm = AudioStreamPlayer.new()
+	_bgm.stream = load("res://After21th.ogg")
+	_bgm.volume_db = -6.0
+	_bgm.finished.connect(_on_bgm_finished)
+	add_child(_bgm)
+	_splat_au = AudioStreamPlayer.new()
+	_splat_au.stream = load("res://tomato-squishwet.mp3")
+	_splat_au.volume_db = 0.0
+	add_child(_splat_au)
+	_settle_music = AudioStreamPlayer.new()
+	_settle_music.stream = load("res://Hidden21th.ogg")
+	_settle_music.volume_db = -6.0
+	_settle_music.finished.connect(_on_settle_music_finished)
+	add_child(_settle_music)
+	_vine_boom = AudioStreamPlayer.new()
+	_vine_boom.stream = load("res://bithuh-vine-boom.mp3")
+	_vine_boom.volume_db = 0.0
+	add_child(_vine_boom)
 
 
 ## 播放落牌音（阻尼正弦低频"咚"）
+func _on_tut_music_finished() -> void:
+	if _tut_music != null and state == State.TUTORIAL:
+		_tut_music.play()
+
+
+func _on_bgm_finished() -> void:
+	if _bgm != null:
+		_bgm.play()
+
+
+func _on_settle_music_finished() -> void:
+	if _settle_music != null:
+		_settle_music.play()
+
+
 func _play_drop_sound() -> void:
 	if _drop_player == null:
 		return
@@ -219,7 +275,10 @@ func _play_drop_sound() -> void:
 	var time := 0.0
 	var inc := 1.0 / rate
 	for i in n:
-		var v := sin(TAU * freq * time) * exp(-decay * time) * 1.0
+		var fade := 1.0
+		if time > dur - 0.02:
+			fade = (dur - time) / 0.02
+		var v := sin(TAU * freq * time) * exp(-decay * time) * fade
 		var s := int(clampf(v * 32767.0, -32768.0, 32767.0))
 		data[i * 2] = s & 0xFF
 		data[i * 2 + 1] = (s >> 8) & 0xFF
@@ -942,6 +1001,8 @@ const TUT_STEPS := 6
 func _start_tutorial() -> void:
 	state = State.TUTORIAL
 	_tut_step = 0
+	if _tut_music != null and not _tut_music.playing:
+		_tut_music.play()
 	if _day_chip != null:
 		_day_chip.visible = false
 	_update_buttons()   # 统一管理按钮：加料/铃铛在加料引导(step4)前隐藏
@@ -1221,6 +1282,8 @@ func _play_match_intro() -> void:
 		cards.append(c)
 	# 洗牌：所有牌同时快速抬起翻转再落回（两轮）
 	for rep in 2:
+		if _shuffle_au != null:
+			_shuffle_au.play()
 		var sw := create_tween()
 		sw.set_parallel(true)
 		for c in cards:
@@ -1231,6 +1294,9 @@ func _play_match_intro() -> void:
 			sw.tween_property(c, "position:y", 0.35, 0.12)\
 				.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN)
 		await sw.finished
+	# 洗牌完毕 → vine boom
+	if _vine_boom != null:
+		_vine_boom.play()
 	# 3. 牌依次滑入牌盒
 	var in_tw := create_tween()
 	for i in 13:
@@ -1325,6 +1391,8 @@ func _start_match() -> void:
 	_rounds_won = 0
 	_rounds_lost = 0
 	_refresh_stat_board()
+	if _bgm != null and not _bgm.playing:
+		_bgm.play()
 	await _play_match_intro()
 	_start_round()
 
@@ -1513,6 +1581,10 @@ func _hide_participate_bar() -> void:
 
 ## 显示模式选择前：西红柿方块抛物砸屏闪屏开场
 func _show_mode_select_flow() -> void:
+	if _tut_music != null:
+		_tut_music.stop()
+	if _error_au != null and (player_lives <= 0 or ai_lives <= 0):
+		_error_au.play()
 	await _play_tomato_splash()
 	_show_mode_bar()
 
@@ -1547,6 +1619,8 @@ func _play_tomato_splash() -> void:
 	await tw.finished
 	# ---- 糊脸砸中：爆红 + 汁液四溅 + 汁液遮罩 + 震屏 + 碎裂 ----
 	_camera_shake_burst(0.55)
+	if _splat_au != null:
+		_splat_au.play()
 	_spawn_juice_burst()
 	_spawn_tomato_shatter()   # 干瘪番茄在闪屏时碎成小块
 	mesh.visible = false
@@ -2174,6 +2248,8 @@ func _resolve() -> void:
 
 	# 整场结束：点"继续"后由 VN 按钮流程触发结算 + 模式选择
 	if match_over:
+		if _error_au != null:
+			_error_au.play()
 		_vn_button.text = "继续"
 		_vn_button.disabled = false
 		return
@@ -2702,6 +2778,31 @@ func _kill_cam_tw() -> void:
 		_cam_tw = null
 
 
+## 结算观看阶段：镜头在结算板前轻微摆动（t 走 0→1 一个周期，循环）
+func _result_cam_sway_step(t: float) -> void:
+	if _camera == null:
+		return
+	var base := Vector3(-1.9, 0.9, 1.4)
+	var look := Vector3(-3.2, 0.55, -0.1)
+	var off := Vector3(sin(t * TAU) * 0.35, sin(t * TAU * 2.0) * 0.05, sin(t * TAU * 0.5) * 0.1)
+	_camera_track(base + off, look, look)
+
+
+func _start_result_cam_sway() -> void:
+	if _camera == null:
+		return
+	_stop_result_cam_sway()
+	_result_cam_tw = create_tween()
+	_result_cam_tw.set_loops()
+	_result_cam_tw.tween_method(_result_cam_sway_step, 0.0, 1.0, 6.0)
+
+
+func _stop_result_cam_sway() -> void:
+	if _result_cam_tw != null:
+		_result_cam_tw.kill()
+		_result_cam_tw = null
+
+
 func _char_for_side(side: int) -> Node3D:
 	return _player_char if side == Side.PLAYER else _ai_char
 
@@ -2750,6 +2851,8 @@ func _play_table_flip() -> void:
 		tw.tween_property(c, "position:x", c.position.x + dir * 0.3, 0.5)
 		tw.tween_property(c, "rotation_degrees:z", 32.0 * dir, 0.4).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_IN_OUT)
 	# 桌面倾斜
+	if _vine_boom != null:
+		_vine_boom.play()
 	var ttw := _table.create_tween()
 	ttw.tween_property(_table, "rotation_degrees:z", 20.0, 0.3).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	# 掀桌：弃置的空罐沉到桌下消失（被掀桌卷走）
@@ -2807,6 +2910,10 @@ func _refresh_stat_board() -> void:
 
 ## 整场结束：3D 结算舞台演出（镜头特写装置 + 老虎机演算 + 记账判词 + 再开一局）
 func _play_3d_result() -> void:
+	if _bgm != null:
+		_bgm.stop()
+	if _settle_music != null and not _settle_music.playing:
+		_settle_music.play()
 	_busy = true
 	# 取消上一局 _focus_on_life 遗留的"回主位"复位，镜头才能锁在特写
 	if _cam_return_tw != null:
@@ -2831,6 +2938,7 @@ func _play_3d_result() -> void:
 	_result_board.show_verdict(win, _judge_cook(_stat_standard, _stat_overshoot, _stat_underdo, _stat_poison))
 	_camera_shake_burst(0.2)
 	_result_board.show_replay_button()
+	_start_result_cam_sway()
 
 	# 等待"再开一局"或"退出"选择（用成员变量，避免闭包按值捕获局部变量）
 	_result_choice = ""
@@ -2841,6 +2949,11 @@ func _play_3d_result() -> void:
 	_result_board.replay_pressed.disconnect(_on_result_replay)
 	_result_board.quit_pressed.disconnect(_on_result_quit)
 	var choice := _result_choice
+	if _bgm != null:
+		_bgm.stop()
+	if _settle_music != null:
+		_settle_music.stop()
+	_stop_result_cam_sway()
 
 	_result_board.hide_replay_button()
 	_result_board.hide_verdict()
