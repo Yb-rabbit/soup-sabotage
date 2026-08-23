@@ -12,9 +12,10 @@ config_version=5
 
 config/name="Savage Odds: Ultimate Punishment"
 config/description="要么赢下这碗汤，要么成为汤里的料"
+config/version="1.0"
 run/main_scene="res://MainMenu.tscn"
 config/features=PackedStringArray("4.7", "Forward Plus")
-config/icon="res://icon.svg"
+config/icon="uid://cra2g5h6cd0fr"
 
 [autoload]
 

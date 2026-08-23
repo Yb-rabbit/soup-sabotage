@@ -12,6 +12,7 @@ const GAME_SCENE := "res://main.tscn"
 @onready var _subtitle: Label = $CanvasLayer/MenuRoot/SubtitleLabel
 @onready var _soup: Label = $CanvasLayer/MenuRoot/SoupGhost
 @onready var _start: Button = $CanvasLayer/MenuRoot/StartButton
+@onready var _quit: Button = $CanvasLayer/MenuRoot/QuitButton
 @onready var _black: ColorRect = $CanvasLayer/MenuRoot/BlackScreen
 @onready var _flash: ColorRect = $CanvasLayer/MenuRoot/RedFlash
 @onready var _shutter_l: ColorRect = $CanvasLayer/MenuRoot/ShutterLeft
@@ -36,6 +37,7 @@ func _ready() -> void:
 	_start.mouse_entered.connect(_on_start_mouse_entered)
 	_start.mouse_exited.connect(_on_start_mouse_exited)
 	_start.pressed.connect(_on_start_button_pressed)
+	_quit.pressed.connect(_on_quit_pressed)
 	_title_base_x = _title.position.x
 	_title_base_y = _title.position.y
 	# 初始隐藏：全黑、标题/副标题/彩蛋透明、快门关闭、闪红透明
@@ -104,6 +106,12 @@ func _on_start_mouse_entered() -> void:
 
 func _on_start_mouse_exited() -> void:
 	_start.scale = Vector2.ONE
+
+
+# 退出程序（主菜单"退出程序"按钮）
+func _on_quit_pressed() -> void:
+	_play(_sfx_click)
+	get_tree().quit()
 
 
 func _on_start_button_pressed() -> void:

@@ -12,13 +12,14 @@ const CAN_PER_MATCH := 1  # 每场最多端上来的罐头次数（改成 >1 即
 const AI_THINK_MAX := 6.0
 const SPECIAL_DAY_CHANCE := 0.4  # 出现特殊日（怀旧节/新鲜日）的概率；其余为普通日
 const DRAW_PENALTY_AT := 3  # 连续平局达此阈值触发“国王掀桌子”（双方各扣 1 命）
+const MENU_SCENE := "res://MainMenu.tscn"  # 结算"退出"回主页面
 
 const AI_TAUNTS: Array[String] = [
-	"再加一把，让这锅更滚烫……",
-	"呵，你自己试过汤味吗？",
+	"就让这锅更滚烫……",
+	"呵，你试过汤味吗？",
 	"国王更偏爱我的配方。",
-	"继续！继续！满上满上！",
-	"你以为你赢定了？天真。",
+	"继续继续！满上满上！",
+	"你以为赢定了？天真。",
 ]
 
 enum Side { PLAYER, AI }
@@ -45,6 +46,9 @@ var _player_char: Node3D
 
 # ---- 2D UI（悬浮层）----
 var _root: Control
+var _paused := false                 # 暂停页开关
+var _pause_panel: Control = null     # 暂停页 UI
+var _pause_volume: HSlider = null    # 音量滑块
 var _vn_panel: PanelContainer
 var _vn_text: Label
 var _vn_portrait: Label
@@ -105,9 +109,19 @@ var _mode_hint: Label  # 模式选择按钮悬停提示小字
 var _mode_buttons: Array[Button] = []
 var _blind_mode := false     # 盲选模式开关
 var _blind_unlocked := false # 通关（整场胜利一次）后解锁盲选
+# ---- 整场统计（SOUP 结算台：厨艺四象限，局级判定）----
+var _stat_standard := 0   # S 达标局数（总分 18~21）
+var _stat_overshoot := 0  # O 爆牌局数（>21）
+var _stat_underdo := 0    # U 欠火局数（<18 未爆）
+var _stat_poison := 0     # P 下料数（特殊日参与下料）
+var _rounds_won := 0
+var _rounds_lost := 0
+var _result_board: ResultBoard3D = null
+var _result_choice := ""   # 结算"再开一局/退出"选择（成员，供信号回调）
 
 # ---- 镜头演出 ----
 var _cam_tw: Tween = null
+var _cam_return_tw: Tween = null  # 扣命后自动回主位的 tween（结算时需取消，否则把特写拉回全景）
 var _banner_label: Label3D = null
 var _banner_tw: Tween = null
 var _cam_home_pos := Vector3(0.5, 2.8, 5.0)
@@ -121,6 +135,7 @@ var _card_box: MeshInstance3D = null       # 场景牌盒装饰（掀桌时爆�
 func _ready() -> void:
 	_build_3d()
 	_build_ui()
+	_build_pause_menu()
 	_setup_drop_sound()
 	_ai_timer = Timer.new()
 	_ai_timer.one_shot = true
@@ -279,6 +294,13 @@ func _build_3d() -> void:
 	_player_phone = ScoreDisplay3D.new()
 	_player_phone.position = Vector3(2.0, 0, 1.5)
 	add_child(_player_phone)
+
+	# 常驻统计结算装置（SOUP 记账台）：与弃置空罐拉开、面板朝向主镜头
+	_result_board = ResultBoard3D.new()
+	_result_board.position = Vector3(-3.2, 0.0, -0.1)
+	_result_board.rotation.y = atan2(3.7, 5.1)   # 面板朝玩家主相机方向
+	_result_board.scale = Vector3(0.85, 0.85, 0.85)
+	add_child(_result_board)
 
 	# 桌边小剧场：方块角色已移除（反馈无法看到）；角色变量保持 null，相关演出函数均有 null 保护
 	# _king_char = _make_char(Color(0.95, 0.78, 0.2), "国王", Vector3(0, 0, -1.6))
@@ -466,10 +488,9 @@ func _char_for(speaker: String) -> Node3D:
 
 
 ## 在说话角色上方弹出 3D 对话气泡：飘起 + 淡出 + 消失
+## 3D 对话气泡：按说话方在固定位置弹出（角色已移除，不再依赖角色节点）
 func _spawn_speech(speaker: String, text: String) -> void:
-	var char := _char_for(speaker)
-	if char == null:
-		return
+	var pos := _speech_pos_for(speaker)
 	var lab := Label3D.new()
 	lab.text = text
 	lab.font_size = 30
@@ -479,15 +500,28 @@ func _spawn_speech(speaker: String, text: String) -> void:
 	lab.outline_modulate = Color(0, 0, 0, 0.85)
 	lab.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	lab.billboard = BaseMaterial3D.BILLBOARD_ENABLED
-	lab.position = Vector3(0, 1.5, 0)
-	char.add_child(lab)
+	lab.position = pos
+	add_child(lab)
 
 	var tw := create_tween()
 	tw.set_parallel(true)
-	tw.tween_property(lab, "position:y", 2.6, 2.4)\
+	tw.tween_property(lab, "position:y", pos.y + 1.1, 2.4)\
 		.set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	tw.tween_property(lab, "modulate:a", 0.0, 0.8).set_delay(1.6)
 	tw.chain().tween_callback(lab.queue_free)
+
+
+## 说话方对应的默认气泡位置（角色移除后，气泡改为固定落点）
+func _speech_pos_for(speaker: String) -> Vector3:
+	match speaker:
+		"你":
+			return Vector3(1.6, 0.9, 1.5)
+		"红队":
+			return Vector3(-1.6, 0.9, -0.8)
+		"国王":
+			return Vector3(0, 1.4, -1.4)
+		_:
+			return Vector3(0.5, 1.4, 0.4)
 
 
 ## 构建教程高亮光环（平放圆环，自发光）
@@ -512,6 +546,108 @@ func _make_ring() -> Node3D:
 # ============================================================
 #  2D 悬浮层 UI
 # ============================================================
+## ESC 暂停页（软暂停：停 AI 计时、禁用 3D 交互；2D 层全屏拦截）
+func _input(event: InputEvent) -> void:
+	if event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
+		_toggle_pause()
+
+
+func _toggle_pause() -> void:
+	if _busy or state == State.GAME_OVER:
+		return   # 结算演出中不暂停，避免冲突
+	_paused = !_paused
+	if _pause_panel != null:
+		_pause_panel.visible = _paused
+	if _paused:
+		if _ai_timer != null:
+			_ai_timer.paused = true
+		_set_result_interactable(false)
+	else:
+		if _ai_timer != null:
+			_ai_timer.paused = false
+		_set_result_interactable(true)
+
+
+## 暂停页"返回主页"（提示进度重置）
+func _quit_to_menu() -> void:
+	_paused = false
+	if _pause_panel != null:
+		_pause_panel.visible = false
+	if _ai_timer != null:
+		_ai_timer.paused = false
+	get_tree().change_scene_to_file(MENU_SCENE)
+
+
+## 构建暂停页 UI（全屏遮罩 + 标题 + 提示小字 + 音量 + 继续/返回主页）
+func _build_pause_menu() -> void:
+	_pause_panel = Control.new()
+	_pause_panel.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_pause_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	_pause_panel.visible = false
+	_root.add_child(_pause_panel)
+
+	var dim := ColorRect.new()
+	dim.color = Color(0, 0, 0, 0.65)
+	dim.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	dim.mouse_filter = Control.MOUSE_FILTER_STOP
+	_pause_panel.add_child(dim)
+
+	var vb := VBoxContainer.new()
+	vb.anchors_preset = Control.PRESET_CENTER
+	vb.anchor_left = 0.5
+	vb.anchor_top = 0.5
+	vb.anchor_right = 0.5
+	vb.anchor_bottom = 0.5
+	vb.offset_left = -150
+	vb.offset_right = 150
+	vb.offset_top = -140
+	vb.offset_bottom = 140
+	vb.alignment = BoxContainer.ALIGNMENT_CENTER
+	vb.add_theme_constant_override("separation", 14)
+	_pause_panel.add_child(vb)
+
+	var title := Label.new()
+	title.text = "暂停"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 34)
+	title.add_theme_color_override("font_color", Color(0.95, 0.9, 0.8))
+	vb.add_child(title)
+
+	var hint := Label.new()
+	hint.text = "返回主页将重置本局进度"
+	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	hint.add_theme_font_size_override("font_size", 13)
+	hint.add_theme_color_override("font_color", Color(0.72, 0.5, 0.5))
+	vb.add_child(hint)
+
+	var vol_lab := Label.new()
+	vol_lab.text = "音量"
+	vol_lab.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	vol_lab.add_theme_font_size_override("font_size", 16)
+	vol_lab.add_theme_color_override("font_color", Color(0.9, 0.9, 0.9))
+	vb.add_child(vol_lab)
+
+	_pause_volume = HSlider.new()
+	_pause_volume.min_value = 0.0
+	_pause_volume.max_value = 1.0
+	_pause_volume.step = 0.05
+	_pause_volume.value = db_to_linear(AudioServer.get_bus_volume_db(0))
+	_pause_volume.custom_minimum_size = Vector2(240, 24)
+	_pause_volume.value_changed.connect(func(v: float) -> void:
+		AudioServer.set_bus_volume_db(0, linear_to_db(clampf(v, 0.0001, 1.0))))
+	vb.add_child(_pause_volume)
+
+	var cont := Button.new()
+	cont.text = "继续"
+	cont.pressed.connect(_toggle_pause)
+	vb.add_child(cont)
+
+	var back := Button.new()
+	back.text = "返回主页"
+	back.pressed.connect(_quit_to_menu)
+	vb.add_child(back)
+
+
 func _build_ui() -> void:
 	_root = Control.new()
 	_root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
@@ -749,7 +885,7 @@ func _build_ui() -> void:
 	_can_bar.visible = false
 	_root.add_child(_can_bar)
 	var b_serve := Button.new()
-	b_serve.text = "上菜（安稳收下这局）"
+	b_serve.text = "不吃（傲娇）"
 	b_serve.custom_minimum_size = Vector2(230, 50)
 	b_serve.add_theme_font_size_override("font_size", 18)
 	b_serve.pressed.connect(_on_can_pick.bind(0))
@@ -1181,6 +1317,14 @@ func _start_match() -> void:
 	_can_remaining = CAN_PER_MATCH
 	_clear_spent_can()
 	_update_lives()
+	# 整场统计清零（从"正式开始选模式"起算；教程在前，不计入）
+	_stat_standard = 0
+	_stat_overshoot = 0
+	_stat_underdo = 0
+	_stat_poison = 0
+	_rounds_won = 0
+	_rounds_lost = 0
+	_refresh_stat_board()
 	await _play_match_intro()
 	_start_round()
 
@@ -1316,6 +1460,8 @@ func _on_mark_pick(v: int) -> void:
 	if state != State.PLAYER_TURN or phase != Phase.MARK:
 		return
 	player_mark_value = v
+	_stat_poison += 1   # P：统计下料数（特殊日参与）
+	_refresh_stat_board()
 	phase = Phase.IDLE
 	_hide_participate_bar()
 	_hide_pick_bar()
@@ -1868,6 +2014,20 @@ func _resolve() -> void:
 	else:
 		result = "draw"
 
+	# 整场统计：厨艺四象限（局级判定，按玩家本局总分归类）
+	if p_bust:
+		_stat_overshoot += 1   # O 爆牌
+	elif player_points >= KING_MIN:
+		_stat_standard += 1    # S 达标
+	else:
+		_stat_underdo += 1     # U 欠火
+	# 胜负局计数（评级/无尽复用）
+	if result == "player":
+		_rounds_won += 1
+	elif result == "ai":
+		_rounds_lost += 1
+	_refresh_stat_board()
+
 	var msg := ""
 	var portrait := "国王"
 	if result == "player":
@@ -1975,7 +2135,7 @@ func _resolve() -> void:
 		_consecutive_draws = 0
 		player_lives = maxi(0, player_lives - 1)
 		ai_lives = maxi(0, ai_lives - 1)
-		msg += "\n连续平局让国王震怒——OMG！他掀了桌子！。"
+		msg += "\n我草，国王彻底怒了——OMG！桌子飞起来了！"
 		if player_lives <= 0:
 			match_over = true
 			msg += "\n你的电量尽失，红队赢下整场盛宴！"
@@ -2004,6 +2164,12 @@ func _resolve() -> void:
 		_shake_card_box()   # 掀桌时牌盒摇晃歪掉
 		await _play_table_flip()
 		_vn_button.disabled = false
+
+	# 整场结束：点"继续"后由 VN 按钮流程触发结算 + 模式选择
+	if match_over:
+		_vn_button.text = "继续"
+		_vn_button.disabled = false
+		return
 
 
 ## 是否触发神秘罐头：玩家赢下关键一局，且处于即将获胜或血量劣势（重叠按最危险的残血=终极裁决）
@@ -2333,6 +2499,8 @@ func _on_vn_button_pressed() -> void:
 		_show_mode_select_flow()
 		return
 	if player_lives <= 0 or ai_lives <= 0:
+		# 整场结束：先播结算演出，再回模式选择
+		await _play_3d_result()
 		_show_mode_select_flow()
 	else:
 		_start_round()
@@ -2385,7 +2553,9 @@ func _show_scene_banner(text: String) -> void:
 	_banner_tw.set_parallel(true)
 	_banner_tw.tween_property(lab, "position:y", 2.0, 0.3)\
 		.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	_banner_tw.tween_property(lab, "modulate:a", 0.0, 0.5).set_delay(1.6)
+	# 停留时长按字数自适应，避免漏看（短句至少 2s，长句最多 6.5s）
+	var stay := clampf(1.2 + 0.15 * text.length(), 2.0, 6.5)
+	_banner_tw.tween_property(lab, "modulate:a", 0.0, 0.5).set_delay(stay)
 	_banner_tw.chain().tween_callback(func() -> void:
 		_banner_tw = null
 		if _banner_label == lab:
@@ -2499,9 +2669,9 @@ func _focus_on_life(_side: int) -> void:
 	# 扣血时轻微放大、观望局面：镜头小幅前移+降低（保持看全桌），不做转向，短暂停留后复位
 	var zoom_pos := Vector3(_cam_home_pos.x, _cam_home_pos.y - 0.4, _cam_home_pos.z - 0.3)
 	_camera_move_to(zoom_pos, _cam_home_look, 0.35)
-	var tw := create_tween()
-	tw.tween_interval(1.65)
-	tw.tween_callback(func() -> void: _camera_move_to(_cam_home_pos, _cam_home_look, 0.6))
+	_cam_return_tw = create_tween()
+	_cam_return_tw.tween_interval(1.65)
+	_cam_return_tw.tween_callback(func() -> void: _camera_move_to(_cam_home_pos, _cam_home_look, 0.6))
 
 
 func _camera_move_to(target_pos: Vector3, look_at: Vector3, dur: float) -> void:
@@ -2577,6 +2747,9 @@ func _play_table_flip() -> void:
 	ttw.tween_property(_table, "rotation_degrees:z", 20.0, 0.3).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
 	# 掀桌：弃置的空罐沉到桌下消失（被掀桌卷走）
 	_sink_spent_can()
+	# 掀桌：统计装置被震得发颤（记录留档）
+	if _result_board != null:
+		_result_board.shake_flip()
 	# 镜头震动
 	_kill_cam_tw()
 	var shake := create_tween()
@@ -2600,6 +2773,116 @@ func _play_table_flip() -> void:
 
 
 ## 弃牌：弹性“弹开”翻开 + 绕 Y 轴倾斜30°，作为“不要这张牌”的场景标记（双方对称）
+## 综合厨艺评级（根据 S/O/U/P 给一句压抑判词）
+func _judge_cook(s: int, o: int, u: int, p: int) -> String:
+	# 多个条件达成时叠加并列显示（按稀有度从高到低）
+	var titles: Array[String] = []
+	if s >= 3 and o + u == 0:
+		titles.append("御膳房之手")
+	if p >= 4:
+		titles.append("下毒惯犯")
+	if o > u and o >= 2:
+		titles.append("走火的毒厨")
+	if u >= 3:
+		titles.append("欠火的学徒")
+	if s >= o + u and s > 0:
+		titles.append("老吃家")
+	if titles.is_empty():
+		return "掌勺的学徒"
+	return " · ".join(titles)
+
+
+## 刷新统计装置显示（SOUP 记账台）
+func _refresh_stat_board() -> void:
+	if _result_board != null:
+		_result_board.refresh(_stat_standard, _stat_overshoot, _stat_underdo, _stat_poison)
+
+
+## 整场结束：3D 结算舞台演出（镜头特写装置 + 老虎机演算 + 记账判词 + 再开一局）
+func _play_3d_result() -> void:
+	_busy = true
+	# 取消上一局 _focus_on_life 遗留的"回主位"复位，镜头才能锁在特写
+	if _cam_return_tw != null:
+		_cam_return_tw.kill()
+		_cam_return_tw = null
+	if _vn_panel != null:
+		_vn_panel.visible = false
+	_set_result_interactable(false)
+
+	# 结算镜头前：把空罐头滑到结算板侧后方（不挡特写），重开时再沉入消失
+	if _spent_can != null:
+		var can_tw := _spent_can.create_tween()
+		can_tw.tween_property(_spent_can, "position", Vector3(-3.3, 0.1, -0.8), 0.5)
+
+	await _cam_await_to(Vector3(-1.9, 0.9, 1.4), Vector3(-3.2, 0.55, -0.1), 1.2)
+	await get_tree().create_timer(0.9).timeout
+	_camera_shake_burst(0.12)
+
+	await _result_board.spin_reveal(_stat_standard, _stat_overshoot, _stat_underdo, _stat_poison)
+
+	var win := ai_lives <= 0
+	_result_board.show_verdict(win, _judge_cook(_stat_standard, _stat_overshoot, _stat_underdo, _stat_poison))
+	_camera_shake_burst(0.2)
+	_result_board.show_replay_button()
+
+	# 等待"再开一局"或"退出"选择（用成员变量，避免闭包按值捕获局部变量）
+	_result_choice = ""
+	_result_board.replay_pressed.connect(_on_result_replay)
+	_result_board.quit_pressed.connect(_on_result_quit)
+	while _result_choice == "":
+		await get_tree().process_frame
+	_result_board.replay_pressed.disconnect(_on_result_replay)
+	_result_board.quit_pressed.disconnect(_on_result_quit)
+	var choice := _result_choice
+
+	_result_board.hide_replay_button()
+	_result_board.hide_verdict()
+	_result_board.reset_standby()   # 装置回待机暗屏（下局不再点亮）
+	_sink_spent_can()   # 空罐头沉入桌面淡出消失（本场痕迹清走）
+	_camera_move_to(_cam_home_pos, _cam_home_look, 0.6)
+	_set_result_interactable(true)
+	_busy = false
+
+	if choice == "quit":
+		# 退出到主页面
+		get_tree().change_scene_to_file(MENU_SCENE)
+		return
+
+
+## 结算按钮回调（成员函数，供信号连接；避免闭包按值捕获局部变量）
+func _on_result_replay() -> void:
+	_result_choice = "replay"
+
+
+func _on_result_quit() -> void:
+	_result_choice = "quit"
+
+
+## 结算演出期间：禁用/恢复 3D 交互控件（避免误触）
+func _set_result_interactable(e: bool) -> void:
+	if _draw_btn != null:
+		_draw_btn.set_enabled(e)
+	if _keep_btn != null:
+		_keep_btn.set_enabled(e)
+	if _skip_btn != null:
+		_skip_btn.set_enabled(e)
+	if _bell != null:
+		_bell.set_enabled(e)
+
+
+## 可等待的平滑运镜（串行演出用）
+func _cam_await_to(target_pos: Vector3, look_at: Vector3, dur: float) -> void:
+	if _camera == null:
+		return
+	_kill_cam_tw()
+	var start := _camera.position
+	_cam_tw = create_tween()
+	_cam_tw.tween_method(_camera_track.bind(target_pos, look_at), start, target_pos, dur)\
+		.set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
+	await _cam_tw.finished
+	_cam_tw = null
+
+
 func _set_discarded(card: Card3D) -> void:
 	if card == null:
 		return

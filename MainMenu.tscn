@@ -1,7 +1,8 @@
 [gd_scene format=3 uid="uid://1ihuhhxicr7g"]
 
 [ext_resource type="Script" uid="uid://vdmxdc6i2sn8" path="res://scripts/main_menu.gd" id="1_menu"]
-[ext_resource type="FontFile" path="res://scripts/STENCIL.TTF" id="2_stencil"]
+[ext_resource type="FontFile" uid="uid://d3oswp8rd7yc8" path="res://scripts/STENCIL.TTF" id="2_stencil"]
+[ext_resource type="FontFile" uid="uid://b5ga3qtkup62y" path="res://scripts/SIMYOU.TTF" id="3_simyou"]
 
 [sub_resource type="Environment" id="Environment_bg"]
 background_mode = 1
@@ -105,16 +106,16 @@ grow_vertical = 2
 [node name="SoupGhost" type="Label" parent="CanvasLayer/MenuRoot" unique_id=2023967455]
 z_index = -1
 layout_mode = 0
-offset_left = 340.0
+offset_left = 260.0
 offset_top = 170.0
-offset_right = 855.0
+offset_right = 950.0
 offset_bottom = 360.0
-theme_override_fonts/font = ExtResource("2_stencil")
 theme_override_colors/font_color = Color(0.9, 0.9, 0.96, 1)
 theme_override_colors/font_outline_color = Color(0.5, 0.55, 0.65, 1)
 theme_override_constants/outline_size = 4
+theme_override_fonts/font = ExtResource("3_simyou")
 theme_override_font_sizes/font_size = 92
-text = "S . O . U . P ."
+text = "乱. 数. 绝. 罚."
 horizontal_alignment = 1
 vertical_alignment = 1
 
@@ -124,13 +125,13 @@ layout_mode = 0
 anchor_right = 1.0
 offset_top = 72.0
 offset_bottom = 148.0
-theme_override_fonts/font = ExtResource("2_stencil")
 theme_override_colors/font_color = Color(1, 0.02, 0.02, 1)
 theme_override_colors/font_shadow_color = Color(0.2, 0, 0, 0.6)
 theme_override_colors/font_outline_color = Color(0.35, 0, 0, 1)
 theme_override_constants/shadow_offset_x = 4
 theme_override_constants/shadow_offset_y = 4
 theme_override_constants/outline_size = 6
+theme_override_fonts/font = ExtResource("2_stencil")
 theme_override_font_sizes/font_size = 60
 text = "SAVAGE ODDS"
 horizontal_alignment = 1
@@ -141,10 +142,10 @@ layout_mode = 0
 anchor_right = 1.0
 offset_top = 156.0
 offset_bottom = 196.0
-theme_override_fonts/font = ExtResource("2_stencil")
 theme_override_colors/font_color = Color(0.82, 0.52, 0.2, 1)
 theme_override_colors/font_outline_color = Color(0.3, 0.18, 0.05, 1)
 theme_override_constants/outline_size = 3
+theme_override_fonts/font = ExtResource("2_stencil")
 theme_override_font_sizes/font_size = 22
 text = "ULTIMATE PUNISHMENT"
 horizontal_alignment = 1
@@ -169,6 +170,43 @@ theme_override_styles/hover = SubResource("StyleBoxFlat_hover")
 theme_override_styles/focus = SubResource("StyleBoxFlat_idle")
 text = "启动 · 开锅"
 clip_text = true
+
+[node name="QuitButton" type="Button" parent="CanvasLayer/MenuRoot" unique_id=857411234]
+layout_mode = 0
+anchor_left = 0.5
+anchor_top = 0.5
+anchor_right = 0.5
+anchor_bottom = 0.5
+offset_left = -55.0
+offset_top = 222.0
+offset_right = 55.0
+offset_bottom = 252.0
+grow_horizontal = 2
+grow_vertical = 2
+theme_override_font_sizes/font_size = 14
+theme_override_styles/normal = SubResource("StyleBoxFlat_idle")
+theme_override_styles/pressed = SubResource("StyleBoxFlat_pressed")
+theme_override_styles/hover = SubResource("StyleBoxFlat_hover")
+theme_override_styles/focus = SubResource("StyleBoxFlat_idle")
+text = "退出程序"
+clip_text = true
+
+[node name="CreditsLabel" type="Label" parent="CanvasLayer/MenuRoot" unique_id=918273645]
+layout_mode = 0
+anchors_preset = 2
+anchor_left = 0.0
+anchor_top = 1.0
+anchor_right = 0.0
+anchor_bottom = 1.0
+offset_left = 24.0
+offset_top = -46.0
+offset_right = 460.0
+offset_bottom = -24.0
+grow_vertical = 0
+theme_override_fonts/font = ExtResource("3_simyou")
+theme_override_font_sizes/font_size = 14
+theme_override_colors/font_color = Color(0.55, 0.55, 0.6, 1)
+text = "制作团队：笔墨纸淹"
 
 [node name="BlackScreen" type="ColorRect" parent="CanvasLayer/MenuRoot" unique_id=1318618111]
 layout_mode = 0
