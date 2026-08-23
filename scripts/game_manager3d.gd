@@ -15,8 +15,8 @@ const DRAW_PENALTY_AT := 3  # 连续平局达此阈值触发“国王掀桌子�
 const MENU_SCENE := "res://MainMenu.tscn"  # 结算"退出"回主页面
 
 const AI_TAUNTS: Array[String] = [
-	"就让这锅更滚烫……",
-	"呵，你试过汤味吗？",
+	"就让这锅变得更滚烫……",
+	"呵，你真试过汤味吗？",
 	"国王更偏爱我的配方。",
 	"继续继续！满上满上！",
 	"你以为赢定了？天真。",
@@ -1069,7 +1069,7 @@ func _tut_handle_draw() -> void:
 		_busy = false
 		player_points = v
 		_update_scores()
-		show_vn("侍从", "你抽到 %d。看牌角的标记——这是【怀旧节】的料，被计入会倒扣电量。再点一次「加料」看看料效。" % v)
+		show_vn("侍从", "你抽到 %d。\n看牌角的标记——这是【怀旧节】的料，被计入会倒扣电量。再点一次「加料」看看料效。" % v)
 		return
 	if _tut_draw_stage == 1:
 		_tut_draw_stage = 2
@@ -2074,6 +2074,13 @@ func _resolve() -> void:
 		if not hit_desc.is_empty():
 			msg += "\n（" + "；".join(hit_desc) + "）"
 
+	# 极值日/奇数日：结算时标记双方的标记牌（作废/豁免的那张，黄色图钉）
+	if round_ingredient == Ingredient.EXTREME or round_ingredient == Ingredient.ODD:
+		if player_mark_value != 0:
+			_add_pin_marker(_find_card(_player_slots, player_mark_value))
+		if ai_mark_value != 0:
+			_add_pin_marker(_find_card(_ai_slots, ai_mark_value))
+
 	# 特殊日：揭示双方参与/不参与
 	if round_ingredient != Ingredient.NONE:
 		var rp := "你：参与（料 %d）" % player_mark_value if player_mark_value != 0 else "你：不参与（和平交易）"
@@ -3017,6 +3024,8 @@ func _should_pin_marker(value: int, mark_value: int) -> bool:
 func _add_pin_marker(card: Card3D) -> void:
 	if card == null:
 		return
+	if card.has_node("pin"):
+		return   # 防重复（同一张牌不叠加图钉）
 	var color := Color(0.9, 0.25, 0.25)
 	match round_ingredient:
 		Ingredient.REFINED:
@@ -3033,4 +3042,5 @@ func _add_pin_marker(card: Card3D) -> void:
 	pin.mesh = pm
 	pin.material_override = mat
 	pin.position = Vector3(0.24, 0.04, 0.36)
+	pin.name = "pin"
 	card.add_child(pin)

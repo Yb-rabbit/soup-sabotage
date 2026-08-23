@@ -29,6 +29,7 @@ func setup(p_title: String, p_sub: String, color: Color = Color(0.85, 0.85, 0.85
 
 func _ready() -> void:
 	_build()
+	_hover_base_y = position.y   # 记录初始基准，hover 抬升后回原位，避免累积/高低差
 
 
 func _build() -> void:
@@ -104,8 +105,6 @@ func set_hover(h: bool) -> void:
 	_hovering = h
 	if _hover_tw != null:
 		_hover_tw.kill()
-	if h:
-		_hover_base_y = position.y  # 记录固定基准，避免位置累积漂移
 	var target_y := _hover_base_y + (0.05 if h else 0.0)
 	_hover_tw = create_tween()
 	_hover_tw.set_parallel(true)

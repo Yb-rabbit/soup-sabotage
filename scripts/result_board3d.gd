@@ -265,6 +265,9 @@ func show_replay_button() -> void:
 	_replay_btn.set_enabled(true)
 	_quit_btn.visible = true
 	_quit_btn.set_enabled(true)
+	# 清残留 hover 抬升，两按钮回到同一基准高度
+	_replay_btn.set_hover(false)
+	_quit_btn.set_hover(false)
 
 
 func hide_replay_button() -> void:
